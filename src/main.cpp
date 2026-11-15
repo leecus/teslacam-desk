@@ -4,7 +4,7 @@
 #include <cstdio>
 
 int main(int argc,char* argv[]) {
-    QApplication app(argc,argv); app.setApplicationName("TeslaCamManager"); app.setOrganizationName("LocalTools"); app.setApplicationVersion("0.1.0"); app.setStyle("Fusion");
+    QApplication app(argc,argv); app.setApplicationName("TeslaCamManager"); app.setOrganizationName("LocalTools"); app.setApplicationVersion("0.1.1"); app.setStyle("Fusion");
     QCommandLineParser parser; parser.setApplicationDescription(QCoreApplication::translate("main","特斯拉影像管家：本地录像索引与事件管理")); parser.addHelpOption(); parser.addVersionOption();
     parser.addOption({"source",QCoreApplication::translate("main","选择初始录像目录（不会自动扫描）"),"path"});
     parser.addOption({"theme",QCoreApplication::translate("main","启动时使用 light 或 dark 外观（不写入设置）"),"light|dark"});
