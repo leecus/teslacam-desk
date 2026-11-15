@@ -1,6 +1,6 @@
 # TeslaCam Desk · 特斯拉影像管家
 
-Windows 桌面工具，C++20 + Qt 6.8 + SQLite + FFmpeg。视频和索引均在本地处理。
+Windows 桌面工具，C++20 + Qt 6.8 + SQLite + FFmpeg。视频和索引均在本地处理。界面提供中文与英文，跟随系统语言，可在“更多 → 语言”切换。
 
 Windows supported. macOS and Linux planned.
 
@@ -58,7 +58,18 @@ setup-dev 仅在项目 .deps 中准备 Python 虚拟环境和 Qt SDK。build.ps1
 
 测试覆盖事件分组、完整事件时间筛选、增量与完整扫描、中断恢复、原片校验与元数据备份、导出状态失效、收藏保护、变化文件拒删、设备不匹配、路径越界、跨片段精确裁剪、缺片拒绝和取消处理。视频测试使用生成画面，不使用真实行车记录。
 
-开发运行参数：`--source "E:\TeslaCam"` 只选择目录，不自动扫描；`--smoke-test` 启动窗口后自动退出。
+开发运行参数：`--source "E:\TeslaCam"` 只选择目录，不自动扫描；`--smoke-test` 启动窗口后自动退出；`--theme light|dark` 指定外观；`--lang zh|en` 指定界面语言；`--screenshot out.png` 渲染窗口后退出。
+
+标题栏右侧的 ☀/☾ 切换浅色与深色外观，“更多 → 语言”切换中文与英文；两项选择都保存在本地设置中，未设置时跟随系统配色与语言。浅色以中性灰为主，深色为暗色面板，两者共用同一套青色强调色。
+
+## 多语言
+
+中文是源语言，界面文本按原样写在代码里；英文译文位于 `i18n/teslacam_en.ts`，构建时由 `lrelease` 编译并内嵌进可执行文件，因此发布包不需要额外的语言文件。
+
+- 新增或修改界面文本时，先在代码中写成 `tr("中文")`（模型层用 `QCoreApplication::translate("Cam", …)`），再在 `i18n/teslacam_en.ts` 补上对应 `<message>`。
+- 译文缺失时自动回退到中文，不会出现空白。
+- 需要重新提取条目时用 Qt 的 `lupdate`；当前开发用的精简 SDK 未包含 `lupdate` 依赖的 Qt6Qml，若要在本机运行它，先 `aqt install-qt … -m qtdeclarative` 装上该模块。
+- 切换语言会重建界面以重新翻译，当前设备、筛选条件、勾选和分页会被保留；有后台任务运行时禁止切换。
 
 ## 当前范围
 

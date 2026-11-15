@@ -9,12 +9,12 @@ public:
 protected:
     void paintEvent(QPaintEvent*) override {
         QPainter painter(this);
-        painter.fillRect(rect(),QColor("#dce5ec"));
+        painter.fillRect(rect(),Theme::color("track"));
         if(length<=0) return;
         const qreal scale=width()/qreal(length);
         for(const auto& span:spans) {
             const int x=qRound(span.start*scale), w=qMax(2,qRound((span.end-span.start)*scale));
-            painter.fillRect(x,0,w,height(),QColor(span.known?"#147d72":"#a9cfc8"));
+            painter.fillRect(x,0,w,height(),Theme::color(span.known?"spanKnown":"spanEstimate"));
         }
     }
 private:
@@ -31,32 +31,32 @@ EventPlayer::EventPlayer(QWidget* parent):QWidget(parent) {
     surface=new QWidget; grid=new QGridLayout(surface); grid->setContentsMargins(0,0,0,0); grid->setSpacing(8);
     surface->setMinimumSize(400,240); layout->addWidget(surface,1);
     marker=new QLabel; marker->setObjectName("muted"); marker->hide(); layout->addWidget(marker);
-    slider=new QSlider(Qt::Horizontal); slider->setAccessibleName("录像时间轴"); slider->setSingleStep(1000); slider->setPageStep(10000); slider->setAccessibleDescription("方向键移动一秒，上下翻页键移动十秒"); layout->addWidget(slider);
-    coverage=new SpanBar; coverage->setFixedHeight(8); coverage->setAccessibleName("已录片段"); coverage->setToolTip("深色是已确认的画面，浅色按约一分钟估算"); layout->addWidget(coverage);
+    slider=new QSlider(Qt::Horizontal); slider->setAccessibleName(tr("录像时间轴")); slider->setSingleStep(1000); slider->setPageStep(10000); slider->setAccessibleDescription(tr("方向键移动一秒，上下翻页键移动十秒")); layout->addWidget(slider);
+    coverage=new SpanBar; coverage->setFixedHeight(8); coverage->setAccessibleName(tr("已录片段")); coverage->setToolTip(tr("深色是已确认的画面，浅色按约一分钟估算")); layout->addWidget(coverage);
     transport=new QWidget; auto controls=new QHBoxLayout(transport); controls->setContentsMargins(0,0,0,0);
-    auto backward=new QPushButton("−10 秒"); play=new QPushButton("播放"); auto forward=new QPushButton("+10 秒");
-    backward->setAccessibleName("后退十秒"); forward->setAccessibleName("前进十秒");
-    speed=new QComboBox; speed->addItems({"0.5×","1×","2×","4×"}); speed->setCurrentIndex(1); speed->setAccessibleName("播放速度");
-    time=new QLabel("00:00 / 00:00"); time->setAccessibleName("播放位置与总时长");
+    auto backward=new QPushButton(tr("−10 秒")); play=new QPushButton(tr("播放")); auto forward=new QPushButton(tr("+10 秒"));
+    backward->setAccessibleName(tr("后退十秒")); forward->setAccessibleName(tr("前进十秒"));
+    speed=new QComboBox; speed->addItems({"0.5×","1×","2×","4×"}); speed->setCurrentIndex(1); speed->setAccessibleName(tr("播放速度"));
+    time=new QLabel("00:00 / 00:00"); time->setAccessibleName(tr("播放位置与总时长"));
     controls->addWidget(backward); controls->addWidget(play); controls->addWidget(forward); controls->addWidget(speed); controls->addStretch(); controls->addWidget(time); layout->addWidget(transport);
     tools=new QWidget; auto actions=new QHBoxLayout(tools); actions->setContentsMargins(0,0,0,0);
-    cameraChoice=new QComboBox; cameraChoice->setMinimumWidth(75); cameraChoice->setAccessibleName("截图与裁剪视角");
-    auto screenshot=new QPushButton("截图"); screenshot->setAccessibleName("保存所选视角截图");
-    cropToggle=new QToolButton; cropToggle->setText("裁剪导出"); cropToggle->setCheckable(true); cropToggle->setArrowType(Qt::RightArrow); cropToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon); cropToggle->setAccessibleName("展开裁剪导出");
-    actions->addWidget(Ui::label("视角",cameraChoice)); actions->addWidget(cameraChoice); actions->addWidget(screenshot); actions->addWidget(cropToggle); actions->addStretch();
-    actions->addWidget(Ui::info("播放与导出说明","双击画面全屏，Esc 返回。未确认时长的片段按约一分钟估算，时间轴浅色是估算、深色是已确认。截图与裁剪使用所选视角；裁剪导出为观看版，不替代原片。")); layout->addWidget(tools);
+    cameraChoice=new QComboBox; cameraChoice->setMinimumWidth(75); cameraChoice->setAccessibleName(tr("截图与裁剪视角"));
+    auto screenshot=new QPushButton(tr("截图")); screenshot->setAccessibleName(tr("保存所选视角截图"));
+    cropToggle=new QToolButton; cropToggle->setText(tr("裁剪导出")); cropToggle->setCheckable(true); cropToggle->setArrowType(Qt::RightArrow); cropToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon); cropToggle->setAccessibleName(tr("展开裁剪导出"));
+    actions->addWidget(Ui::label(tr("视角"),cameraChoice)); actions->addWidget(cameraChoice); actions->addWidget(screenshot); actions->addWidget(cropToggle); actions->addStretch();
+    actions->addWidget(Ui::info(tr("播放与导出说明"),tr("双击画面全屏，Esc 返回。未确认时长的片段按约一分钟估算，时间轴浅色是估算、深色是已确认。截图与裁剪使用所选视角；裁剪导出为观看版，不替代原片。"))); layout->addWidget(tools);
     connect(screenshot,&QPushButton::clicked,this,&EventPlayer::saveScreenshot);
     rangePanel=new QWidget; rangePanel->setObjectName("rangePanel"); auto range=new QHBoxLayout(rangePanel); range->setContentsMargins(10,10,10,10);
-    from=new QSpinBox; to=new QSpinBox; from->setSuffix(" 秒"); to->setSuffix(" 秒");
-    from->setAccessibleName("裁剪起点秒数"); to->setAccessibleName("裁剪终点秒数");
-    auto exportButton=new QPushButton("导出片段"); exportButton->setObjectName("primary");
-    range->addWidget(Ui::label("开始",from)); range->addWidget(from); range->addWidget(Ui::label("结束",to)); range->addWidget(to); range->addWidget(exportButton); layout->addWidget(rangePanel);
-    connect(cropToggle,&QToolButton::toggled,this,[this](bool expanded){rangePanel->setVisible(expanded); cropToggle->setArrowType(expanded?Qt::DownArrow:Qt::RightArrow); cropToggle->setAccessibleName(expanded?"收起裁剪导出":"展开裁剪导出");});
+    from=new QSpinBox; to=new QSpinBox; from->setSuffix(tr(" 秒")); to->setSuffix(tr(" 秒"));
+    from->setAccessibleName(tr("裁剪起点秒数")); to->setAccessibleName(tr("裁剪终点秒数"));
+    auto exportButton=new QPushButton(tr("导出片段")); exportButton->setObjectName("primary");
+    range->addWidget(Ui::label(tr("开始"),from)); range->addWidget(from); range->addWidget(Ui::label(tr("结束"),to)); range->addWidget(to); range->addWidget(exportButton); layout->addWidget(rangePanel);
+    connect(cropToggle,&QToolButton::toggled,this,[this](bool expanded){rangePanel->setVisible(expanded); cropToggle->setArrowType(expanded?Qt::DownArrow:Qt::RightArrow); cropToggle->setAccessibleName(expanded?tr("收起裁剪导出"):tr("展开裁剪导出"));});
     connect(exportButton,&QPushButton::clicked,this,&EventPlayer::rangeExportRequested);
     connect(play,&QPushButton::clicked,this,[this] {
         if(clips.isEmpty()) return;
         if(playing) pause();
-        else { if(position>=length) position=0; playing=true; anchor=position; elapsed.restart(); play->setText("暂停"); sync(); }
+        else { if(position>=length) position=0; playing=true; anchor=position; elapsed.restart(); play->setText(tr("暂停")); sync(); }
     });
     connect(backward,&QPushButton::clicked,this,[this]{seek(position-10000);});
     connect(forward,&QPushButton::clicked,this,[this]{seek(position+10000);});
@@ -79,7 +79,7 @@ void EventPlayer::clear() {
     for(auto lane:lanes) { lane->player->stop(); delete lane->player; delete lane; }
     lanes.clear();
     while(auto item=grid->takeAt(0)) { delete item->widget(); delete item; }
-    auto empty=new QLabel("未选择录像"); empty->setAlignment(Qt::AlignCenter); empty->setObjectName("muted"); grid->addWidget(empty,0,0);
+    auto empty=new QLabel(tr("未选择录像")); empty->setAlignment(Qt::AlignCenter); empty->setObjectName("muted"); grid->addWidget(empty,0,0);
     cameraChoice->clear(); length=position=0; slider->setRange(0,0); from->setRange(0,0); to->setRange(0,0); static_cast<SpanBar*>(coverage)->setSpans({},0);
     time->setText("00:00 / 00:00"); marker->clear(); marker->hide(); slider->hide(); transport->hide(); tools->hide(); cropToggle->setChecked(false); rangePanel->hide();
 }
@@ -96,9 +96,9 @@ void EventPlayer::load(const Cam::Source& src,const QList<Cam::Clip>& values,con
         auto box=new QWidget; box->setObjectName("cameraBox"); auto l=new QVBoxLayout(box); l->setContentsMargins(6,6,6,6); l->setSpacing(3);
         auto caption=new QLabel(Cam::cameraLabel(camera)); caption->setObjectName("cameraTitle"); l->addWidget(caption);
         lane->video=new QVideoWidget; lane->video->installEventFilter(this); lane->video->setMinimumSize(120,65); lane->video->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Expanding); l->addWidget(lane->video,1);
-        lane->status=new QLabel("无此视角录像"); lane->status->setObjectName("cameraStatus"); lane->status->setWordWrap(true); l->addWidget(lane->status);
+        lane->status=new QLabel(tr("无此视角录像")); lane->status->setObjectName("cameraStatus"); lane->status->setWordWrap(true); l->addWidget(lane->status);
         lane->player=new QMediaPlayer(this); lane->player->setVideoOutput(lane->video);
-        connect(lane->player,&QMediaPlayer::errorOccurred,this,[lane](QMediaPlayer::Error,const QString& message){lane->status->setText("无法播放"); lane->status->setToolTip(message); lane->status->setAccessibleDescription(message); lane->status->show();});
+        connect(lane->player,&QMediaPlayer::errorOccurred,this,[lane](QMediaPlayer::Error,const QString& message){lane->status->setText(EventPlayer::tr("无法播放")); lane->status->setToolTip(message); lane->status->setAccessibleDescription(message); lane->status->show();});
         connect(lane->player,&QMediaPlayer::durationChanged,this,[this,lane](qint64 duration){
             if(duration>0 && !lane->path.isEmpty()) { durations[lane->path]=duration; emit clipDurationKnown(lane->path,duration); updateLength(); if(lane->player->mediaStatus()==QMediaPlayer::LoadedMedia) sync(); }
         });
@@ -117,7 +117,7 @@ void EventPlayer::load(const Cam::Source& src,const QList<Cam::Clip>& values,con
         if(timestamp.isValid()) {
             const QDateTime local=timestamp.timeSpec()==Qt::LocalTime?timestamp:timestamp.toLocalTime();
             const qint64 offset=start.msecsTo(local);
-            if(offset>=0 && offset<length) {marker->setText("触发 "+clockText(offset)); marker->setToolTip("哨兵事件元数据中的触发时间"); marker->setAccessibleName("哨兵触发时间 "+clockText(offset)); marker->show();}
+            if(offset>=0 && offset<length) {marker->setText(tr("触发 %1").arg(clockText(offset))); marker->setToolTip(tr("哨兵事件元数据中的触发时间")); marker->setAccessibleName(tr("哨兵触发时间 %1").arg(clockText(offset))); marker->show();}
         }
     }
     sync(); refreshCoverage();
@@ -152,7 +152,7 @@ bool EventPlayer::eventFilter(QObject* watched,QEvent* event) {
     return QWidget::eventFilter(watched,event);
 }
 void EventPlayer::pause() {
-    playing=false; play->setText("播放"); for(auto lane:lanes) lane->player->pause();
+    playing=false; play->setText(tr("播放")); for(auto lane:lanes) lane->player->pause();
 }
 void EventPlayer::seek(qint64 value) { position=qBound(qint64(0),value,length); anchor=position; elapsed.restart(); sync(); }
 void EventPlayer::sync() {
@@ -163,15 +163,15 @@ void EventPlayer::sync() {
         const Cam::Clip* selected=nullptr;
         for(const auto& c:clips) if(c.camera==lane->camera && clipOffset(c)<=position) selected=&c;
         if(!selected || position>=clipOffset(*selected)+durations.value(selected->relative,60000)) {
-            lane->player->pause(); lane->video->hide(); lane->status->setText("无录像"); lane->status->show(); continue;
+            lane->player->pause(); lane->video->hide(); lane->status->setText(tr("无录像")); lane->status->show(); continue;
         }
         const auto& c=*selected;
         if(lane->path!=c.relative) {
             try {
                 const QString path=Cam::verifiedPath(source,c);
-                lane->path=c.relative; lane->status->setText("载入中…"); lane->status->show(); lane->video->setToolTip(QFileInfo(c.relative).fileName()+"\n双击全屏，Esc 返回"); lane->video->setAccessibleName(Cam::cameraLabel(c.camera)+"录像"); lane->video->show();
+                lane->path=c.relative; lane->status->setText(tr("载入中…")); lane->status->show(); lane->video->setToolTip(tr("%1\n双击全屏，Esc 返回").arg(QFileInfo(c.relative).fileName())); lane->video->setAccessibleName(tr("%1录像").arg(Cam::cameraLabel(c.camera))); lane->video->show();
                 lane->player->setSource(QUrl::fromLocalFile(path));
-            } catch(const std::exception& e) { lane->video->hide(); lane->status->setText("文件不可用"); lane->status->setToolTip(QString::fromUtf8(e.what())); lane->status->setAccessibleDescription(QString::fromUtf8(e.what())); lane->status->show(); continue; }
+            } catch(const std::exception& e) { lane->video->hide(); lane->status->setText(tr("文件不可用")); lane->status->setToolTip(QString::fromUtf8(e.what())); lane->status->setAccessibleDescription(QString::fromUtf8(e.what())); lane->status->show(); continue; }
         }
         if(lane->player->error()!=QMediaPlayer::NoError) continue;
         lane->video->show(); lane->status->hide();
@@ -187,9 +187,9 @@ int EventPlayer::rangeEnd() const {return to->value();}
 void EventPlayer::saveScreenshot() {
     for(auto lane:lanes) if(lane->camera==camera()) {
         auto frame=lane->video->videoSink()->videoFrame().toImage();
-        if(frame.isNull()) { QMessageBox::information(this,"截图","请先播放所选视角，等待画面出现。"); return; }
-        const QString path=QFileDialog::getSaveFileName(this,"保存当前视角截图",QDir::homePath()+"/TeslaCam-"+QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss")+".png","PNG 图片 (*.png)");
-        if(!path.isEmpty() && !frame.save(path,"PNG")) QMessageBox::warning(this,"截图失败","无法保存到所选位置。");
+        if(frame.isNull()) { QMessageBox::information(this,tr("截图"),tr("请先播放所选视角，等待画面出现。")); return; }
+        const QString path=QFileDialog::getSaveFileName(this,tr("保存当前视角截图"),QDir::homePath()+"/TeslaCam-"+QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss")+".png",tr("PNG 图片 (*.png)"));
+        if(!path.isEmpty() && !frame.save(path,"PNG")) QMessageBox::warning(this,tr("截图失败"),tr("无法保存到所选位置。"));
         return;
     }
 }

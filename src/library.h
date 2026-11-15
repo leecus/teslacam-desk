@@ -29,6 +29,7 @@ struct Result {
 };
 using Progress = std::function<void(int, int, const QString&)>;
 QString dataDirectory();
+QString settingsFile();
 QString humanBytes(qint64 bytes);
 QString kindLabel(const QString& kind);
 QString cameraLabel(const QString& camera);

@@ -1,4 +1,5 @@
 #include "library.h"
+#include <QCoreApplication>
 #ifdef Q_OS_WIN
 #include <windows.h>
 #endif
@@ -13,9 +14,10 @@ static void fail(const QString& message) { throw std::runtime_error(message.toUt
 QString dataDirectory() {
     QString path = qEnvironmentVariable("TESLACAM_DATA_DIR");
     if (path.isEmpty()) path = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
-    if (!QDir().mkpath(path)) fail("无法创建本地索引目录：" + path);
+    if (!QDir().mkpath(path)) fail(QCoreApplication::translate("Cam","无法创建本地索引目录：%1").arg(path));
     return QDir(path).absolutePath();
 }
+QString settingsFile() { return dataDirectory() + "/settings.ini"; }
 QString humanBytes(qint64 bytes) {
     const QStringList units{"B", "KB", "MB", "GB", "TB"};
     double value = double(bytes); int unit = 0;
@@ -23,25 +25,30 @@ QString humanBytes(qint64 bytes) {
     return QString::number(value, 'f', unit < 2 ? 0 : 1) + " " + units[unit];
 }
 QString kindLabel(const QString& kind) {
-    if (kind == "sentry") return "哨兵录像";
-    if (kind == "saved") return "手动保存";
-    if (kind == "recent") return "近期行车 · 推断分组";
-    return "其他录像";
+    if (kind == "sentry") return QCoreApplication::translate("Cam","哨兵录像");
+    if (kind == "saved") return QCoreApplication::translate("Cam","手动保存");
+    if (kind == "recent") return QCoreApplication::translate("Cam","近期行车 · 推断分组");
+    return QCoreApplication::translate("Cam","其他录像");
 }
 QString cameraLabel(const QString& camera) {
-    static const QMap<QString, QString> labels{{"front", "前方"}, {"back", "后方"},
-        {"left_repeater", "左侧"}, {"right_repeater", "右侧"},
-        {"left_pillar", "左前"}, {"right_pillar", "右前"}};
-    return labels.value(camera, camera);
+    if (camera == "front") return QCoreApplication::translate("Cam","前方");
+    if (camera == "back") return QCoreApplication::translate("Cam","后方");
+    if (camera == "left_repeater") return QCoreApplication::translate("Cam","左侧");
+    if (camera == "right_repeater") return QCoreApplication::translate("Cam","右侧");
+    if (camera == "left_pillar") return QCoreApplication::translate("Cam","左前");
+    if (camera == "right_pillar") return QCoreApplication::translate("Cam","右前");
+    return camera;
 }
-static const QMap<QString, QString>& reasonNames() {
-    static const QMap<QString, QString> labels{{"sentry_aware_object_detection", "检测到物体"},
-        {"user_interaction_honk", "鸣笛"}, {"user_interaction_dashcam", "手动保存"}};
-    return labels;
+static const QStringList& reasonKeys() {
+    static const QStringList keys{"sentry_aware_object_detection", "user_interaction_honk", "user_interaction_dashcam"};
+    return keys;
 }
 QString reasonLabel(const QString& reason) {
     if (reason.isEmpty()) return {};
-    return reasonNames().value(reason, reason);
+    if (reason == "sentry_aware_object_detection") return QCoreApplication::translate("Cam","检测到物体");
+    if (reason == "user_interaction_honk") return QCoreApplication::translate("Cam","鸣笛");
+    if (reason == "user_interaction_dashcam") return QCoreApplication::translate("Cam","手动保存");
+    return reason;
 }
 static QDateTime localTime(const QString& text) {
     QDateTime plain = QDateTime::fromString(text, "yyyy-MM-dd HH:mm:ss");
@@ -94,15 +101,15 @@ static bool linked(const QFileInfo& info) {
 }
 Source identifySource(const QString& path) {
     QFileInfo chosen(path);
-    if (!chosen.exists() || !chosen.isDir() || linked(chosen)) fail("录像目录不存在，或目录是链接。");
+    if (!chosen.exists() || !chosen.isDir() || linked(chosen)) fail(QCoreApplication::translate("Cam","录像目录不存在，或目录是链接。"));
     QString root = chosen.canonicalFilePath();
     if (QDir(root).exists("TeslaCam")) root = QFileInfo(QDir(root).filePath("TeslaCam")).canonicalFilePath();
     if (root.isEmpty() || linked(QFileInfo(QDir(chosen.absoluteFilePath()).filePath("TeslaCam"))))
-        fail("不能使用链接形式的 TeslaCam 目录。");
+        fail(QCoreApplication::translate("Cam","不能使用链接形式的 TeslaCam 目录。"));
     // Reject links in all ancestors; actions must never traverse junctions to another target.
     QString ancestor = root;
     while (true) {
-        if (linked(QFileInfo(ancestor))) fail("录像目录路径含符号链接或目录联接。");
+        if (linked(QFileInfo(ancestor))) fail(QCoreApplication::translate("Cam","录像目录路径含符号链接或目录联接。"));
         const QString parent = QFileInfo(ancestor).dir().absolutePath();
         if (parent == ancestor) break;
         ancestor = parent;
@@ -114,7 +121,7 @@ Source identifySource(const QString& path) {
     DWORD serial = 0;
     if (!GetVolumePathNameW(reinterpret_cast<LPCWSTR>(root.utf16()), volumeRoot, MAX_PATH) ||
         !GetVolumeInformationW(volumeRoot, nullptr, 0, &serial, nullptr, nullptr, nullptr, 0))
-        fail("无法读取磁盘身份，请重新连接设备。");
+        fail(QCoreApplication::translate("Cam","无法读取磁盘身份，请重新连接设备。"));
     if (GetVolumeNameForVolumeMountPointW(volumeRoot, guid, MAX_PATH)) device = QString::fromWCharArray(guid);
     device += ":" + QString::number(serial, 16);
 #else
@@ -124,24 +131,24 @@ Source identifySource(const QString& path) {
     Source source;
     source.id = QString::fromLatin1(QCryptographicHash::hash((device + "/" + relative).toUtf8(), QCryptographicHash::Sha256).toHex());
     source.root = root;
-    source.name = (storage.name().isEmpty() ? "录像设备" : storage.name()) + " · " + QDir::toNativeSeparators(root);
-    source.status = "尚未扫描";
+    source.name = (storage.name().isEmpty() ? QCoreApplication::translate("Cam","录像设备") : storage.name()) + " · " + QDir::toNativeSeparators(root);
+    source.status = QCoreApplication::translate("Cam","尚未扫描");
     return source;
 }
 QString verifiedPath(const Source& source, const Clip& clip, bool checkFingerprint, bool checkDevice) {
-    if (checkDevice && identifySource(source.root).id != source.id) fail("磁盘身份已变化，已停止操作。");
+    if (checkDevice && identifySource(source.root).id != source.id) fail(QCoreApplication::translate("Cam","磁盘身份已变化，已停止操作。"));
     const QString rel = QDir::fromNativeSeparators(clip.relative);
-    if (rel.isEmpty() || QDir::isAbsolutePath(rel) || rel.split('/').contains("..")) fail("索引文件路径无效。");
+    if (rel.isEmpty() || QDir::isAbsolutePath(rel) || rel.split('/').contains("..")) fail(QCoreApplication::translate("Cam","索引文件路径无效。"));
     const QString full = QDir(source.root).absoluteFilePath(rel);
     QString parent = full;
     while (isWithin(source.root, parent)) {
-        if (linked(QFileInfo(parent))) fail("文件路径已变为链接：" + rel);
+        if (linked(QFileInfo(parent))) fail(QCoreApplication::translate("Cam","文件路径已变为链接：%1").arg(rel));
         parent = QFileInfo(parent).dir().absolutePath();
     }
     QFileInfo info(full);
-    if (!info.exists() || !info.isFile() || !isWithin(source.root, info.canonicalFilePath())) fail("文件已离线或不存在：" + rel);
+    if (!info.exists() || !info.isFile() || !isWithin(source.root, info.canonicalFilePath())) fail(QCoreApplication::translate("Cam","文件已离线或不存在：%1").arg(rel));
     if (checkFingerprint && (info.size() != clip.size || info.lastModified().toMSecsSinceEpoch() != clip.modified))
-        fail("文件已变化，请更新索引后重试：" + rel);
+        fail(QCoreApplication::translate("Cam","文件已变化，请更新索引后重试：%1").arg(rel));
     return info.canonicalFilePath();
 }
 QString thumbnailPath(const Source& source, const Clip& clip, int offsetMs) {
@@ -157,7 +164,7 @@ Database::Database(const QString& path) {
     sql = QSqlDatabase::addDatabase("QSQLITE", connection);
     sql.setDatabaseName(path);
     sql.setConnectOptions("QSQLITE_BUSY_TIMEOUT=10000");
-    if (!sql.open()) fail("无法打开索引：" + sql.lastError().text());
+    if (!sql.open()) fail(QCoreApplication::translate("Cam","无法打开索引：%1").arg(sql.lastError().text()));
     exec("PRAGMA journal_mode=WAL");
     exec("PRAGMA foreign_keys=ON");
     exec("CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY,root TEXT,name TEXT,last_scan TEXT,status TEXT)");
@@ -204,9 +211,9 @@ QList<Event> Database::events(const QString& id, const QString& kind, const QStr
     if (!search.isEmpty()) {
         text += " AND (instr(lower(c.event),lower(?))>0 OR instr(MIN(c.stamp),?)>0 OR instr(lower(COALESCE(MAX(m.reason),'')),lower(?))>0 OR instr(lower(COALESCE(MAX(m.city),'')),lower(?))>0 OR instr(lower(COALESCE(MAX(m.trigger),'')),lower(?))>0";
         args << search << search << search << search << search;
-        for (auto it = reasonNames().cbegin(); it != reasonNames().cend(); ++it) {
-            if (!it.value().contains(search, Qt::CaseInsensitive)) continue;
-            text += " OR MAX(m.reason)=?"; args << it.key();
+        for (const auto& key : reasonKeys()) {
+            if (!reasonLabel(key).contains(search, Qt::CaseInsensitive)) continue;
+            text += " OR MAX(m.reason)=?"; args << key;
         }
         text += ")";
     }
@@ -266,11 +273,11 @@ static Clip describe(const QString& root, const QFileInfo& info) {
 static void enumerate(const QString& dir, QStringList& files, std::atomic_bool& cancel, const Progress& progress, int& visited) {
     if (cancel) return;
     QFileInfo info(dir);
-    if (!info.isReadable() || linked(info)) fail("目录不可读取或含链接："+dir);
+    if (!info.isReadable() || linked(info)) fail(QCoreApplication::translate("Cam","目录不可读取或含链接：%1").arg(dir));
     std::error_code ec;
     const std::filesystem::path native(dir.toStdWString());
     std::filesystem::directory_iterator iterator(native,ec),end;
-    if(ec) fail("无法枚举目录（不会移除旧索引）："+dir+" · "+QString::fromStdString(ec.message()));
+    if(ec) fail(QCoreApplication::translate("Cam","无法枚举目录（不会移除旧索引）：%1 · %2").arg(dir,QString::fromStdString(ec.message())));
     while(iterator!=end) {
         if (cancel) break;
         const QFileInfo entry(QString::fromStdWString(iterator->path().wstring()));
@@ -278,18 +285,18 @@ static void enumerate(const QString& dir, QStringList& files, std::atomic_bool& 
             if (entry.isDir()) enumerate(entry.absoluteFilePath(),files,cancel,progress,visited);
             else if(entry.suffix().compare("mp4",Qt::CaseInsensitive)==0) {
                 files << entry.absoluteFilePath();
-                if (++visited%100==0 && progress) progress(visited,0,"发现视频文件，正在枚举目录…");
+                if (++visited%100==0 && progress) progress(visited,0,QCoreApplication::translate("Cam","发现视频文件，正在枚举目录…"));
             }
         }
         iterator.increment(ec);
-        if(ec) fail("目录读取中断（不会移除旧索引）："+dir);
+        if(ec) fail(QCoreApplication::translate("Cam","目录读取中断（不会移除旧索引）：%1").arg(dir));
     }
 }
 Result scan(const QString& dbPath, const Source& source, bool rebuild, std::atomic_bool& cancel, const Progress& progress) {
     Result result; Database db(dbPath); Source current=source;
     for(const auto& old:db.sources()) if(old.id==source.id) current.lastScan=old.lastScan;
-    if(identifySource(source.root).id!=source.id) fail("设备身份不匹配。");
-    current.status="扫描中（列表可能不完整）"; db.saveSource(current);
+    if(identifySource(source.root).id!=source.id) fail(QCoreApplication::translate("Cam","设备身份不匹配。"));
+    current.status=QCoreApplication::translate("Cam","扫描中（列表可能不完整）"); db.saveSource(current);
     QStringList paths; int visited=0;
     try {
         enumerate(source.root,paths,cancel,progress,visited);
@@ -305,7 +312,7 @@ Result scan(const QString& dbPath, const Source& source, bool rebuild, std::atom
             for(int i=0;i<paths.size() && !cancel;++i) {
                 if(!transaction) { if(!db.sql.transaction()) fail(db.sql.lastError().text()); transaction=true; }
                 QFileInfo info(paths[i]);
-                if(!info.exists() || !info.isFile()) fail("扫描时文件消失，请重新扫描："+paths[i]);
+                if(!info.exists() || !info.isFile()) fail(QCoreApplication::translate("Cam","扫描时文件消失，请重新扫描：%1").arg(paths[i]));
                 const Clip c=describe(source.root,info);
                 // Device identity is checked when a batch commits. Each file still has to stay inside the root.
                 verifiedPath(source,c,true,false);
@@ -324,69 +331,69 @@ Result scan(const QString& dbPath, const Source& source, bool rebuild, std::atom
                 }
                 ++result.files; result.bytes+=c.size;
                 if(result.files%100==0 || i==paths.size()-1) {
-                    if(identifySource(source.root).id!=source.id) fail("设备已断开或被更换。");
+                    if(identifySource(source.root).id!=source.id) fail(QCoreApplication::translate("Cam","设备已断开或被更换。"));
                     if(!db.sql.commit()) fail(db.sql.lastError().text()); transaction=false;
-                    if(progress) progress(result.files,int(paths.size()),"建立索引 · "+c.relative);
+                    if(progress) progress(result.files,int(paths.size()),QCoreApplication::translate("Cam","建立索引 · %1").arg(c.relative));
                 }
             }
             if(transaction) {
-                if(identifySource(source.root).id!=source.id) fail("设备已断开或被更换。");
+                if(identifySource(source.root).id!=source.id) fail(QCoreApplication::translate("Cam","设备已断开或被更换。"));
                 if(!db.sql.commit()) fail(db.sql.lastError().text());
             }
         } catch(...) { if(transaction) db.sql.rollback(); throw; }
         result.canceled=cancel;
         if(!cancel) {
-            if(identifySource(source.root).id!=source.id) fail("设备已断开或被更换。");
+            if(identifySource(source.root).id!=source.id) fail(QCoreApplication::translate("Cam","设备已断开或被更换。"));
             auto q=db.query("DELETE FROM clips WHERE source=? AND seen<>?",{source.id,generation}); result.removed=int(q.numRowsAffected());
             db.query("DELETE FROM event_meta WHERE source=? AND event NOT IN (SELECT DISTINCT event FROM clips WHERE source=?)",{source.id,source.id});
-            current.lastScan=QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss"); current.status="索引已完成";
-        } else current.status="扫描已中断 · 可继续更新";
+            current.lastScan=QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss"); current.status=QCoreApplication::translate("Cam","索引已完成");
+        } else current.status=QCoreApplication::translate("Cam","扫描已中断 · 可继续更新");
         db.saveSource(current);
-    } catch(...) { current.status="扫描失败 · 保留已有索引"; db.saveSource(current); throw; }
+    } catch(...) { current.status=QCoreApplication::translate("Cam","扫描失败 · 保留已有索引"); db.saveSource(current); throw; }
     result.events=int(db.events(source.id).size());
     return result;
 }
 
 static QByteArray hashFile(const QString& path, std::atomic_bool& cancel) {
-    QFile file(path); if(!file.open(QIODevice::ReadOnly)) fail("无法读取："+path);
+    QFile file(path); if(!file.open(QIODevice::ReadOnly)) fail(QCoreApplication::translate("Cam","无法读取：%1").arg(path));
     QCryptographicHash hash(QCryptographicHash::Sha256);
     while(!file.atEnd()) {
         if(cancel) return {};
         const QByteArray data=file.read(1024*1024);
-        if(data.isEmpty() && file.error()!=QFileDevice::NoError) fail("读取失败："+path);
+        if(data.isEmpty() && file.error()!=QFileDevice::NoError) fail(QCoreApplication::translate("Cam","读取失败：%1").arg(path));
         hash.addData(data);
     }
     return hash.result();
 }
 static QString copyVerified(const QString& path, const QString& target, std::atomic_bool& cancel) {
-    QFile input(path); if(!input.open(QIODevice::ReadOnly)) fail("无法读取原文件："+path);
-    if(QFileInfo::exists(target)) fail("目标已存在，禁止覆盖："+target);
-    if(!QDir().mkpath(QFileInfo(target).absolutePath())) fail("无法创建导出目录。");
-    QSaveFile output(target); if(!output.open(QIODevice::WriteOnly)) fail("无法写入："+target);
+    QFile input(path); if(!input.open(QIODevice::ReadOnly)) fail(QCoreApplication::translate("Cam","无法读取原文件：%1").arg(path));
+    if(QFileInfo::exists(target)) fail(QCoreApplication::translate("Cam","目标已存在，禁止覆盖：%1").arg(target));
+    if(!QDir().mkpath(QFileInfo(target).absolutePath())) fail(QCoreApplication::translate("Cam","无法创建导出目录。"));
+    QSaveFile output(target); if(!output.open(QIODevice::WriteOnly)) fail(QCoreApplication::translate("Cam","无法写入：%1").arg(target));
     QCryptographicHash hash(QCryptographicHash::Sha256);
     while(!input.atEnd()) {
         if(cancel) { output.cancelWriting(); return {}; }
         QByteArray block=input.read(1024*1024);
-        if(block.isEmpty() && input.error()!=QFileDevice::NoError) fail("原文件读取失败："+path);
+        if(block.isEmpty() && input.error()!=QFileDevice::NoError) fail(QCoreApplication::translate("Cam","原文件读取失败：%1").arg(path));
         hash.addData(block);
-        if(output.write(block)!=block.size()) fail("导出失败，可能空间不足："+target);
+        if(output.write(block)!=block.size()) fail(QCoreApplication::translate("Cam","导出失败，可能空间不足：%1").arg(target));
     }
     if(cancel) { output.cancelWriting(); return {}; }
-    if(!output.commit()) fail("无法完成导出："+target);
+    if(!output.commit()) fail(QCoreApplication::translate("Cam","无法完成导出：%1").arg(target));
     const auto copied=hashFile(target,cancel);
     if(cancel) return {};
-    if(hash.result()!=copied) fail("导出校验失败："+target);
+    if(hash.result()!=copied) fail(QCoreApplication::translate("Cam","导出校验失败：%1").arg(target));
     return QString::fromLatin1(copied.toHex());
 }
 Result exportOriginals(const QString& dbPath, const Source& source, const QStringList& keys, const QString& destination, std::atomic_bool& cancel, const Progress& progress) {
     Result result; Database db(dbPath);
     const QString destRoot=QFileInfo(destination).canonicalFilePath();
-    if(destRoot.isEmpty()) fail("导出目标目录不存在。");
-    if(destRoot.compare(source.root,Qt::CaseInsensitive)==0 || isWithin(source.root,destRoot)) fail("请选择录像目录以外的导出位置。");
-    if(identifySource(source.root).id!=source.id) fail("设备已更换。");
+    if(destRoot.isEmpty()) fail(QCoreApplication::translate("Cam","导出目标目录不存在。"));
+    if(destRoot.compare(source.root,Qt::CaseInsensitive)==0 || isWithin(source.root,destRoot)) fail(QCoreApplication::translate("Cam","请选择录像目录以外的导出位置。"));
+    if(identifySource(source.root).id!=source.id) fail(QCoreApplication::translate("Cam","设备已更换。"));
     const QString session="TeslaCam-"+QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss")+"-"+QUuid::createUuid().toString(QUuid::Id128).left(8);
     result.destination=QDir(destRoot).filePath(session);
-    if(!QDir().mkpath(result.destination)) fail("无法创建导出目录。");
+    if(!QDir().mkpath(result.destination)) fail(QCoreApplication::translate("Cam","无法创建导出目录。"));
     QJsonArray manifest; int total=0;
     for(const auto& key:keys) total+=int(db.clips(source.id,key).size());
     for(const auto& key:keys) {
@@ -402,7 +409,7 @@ Result exportOriginals(const QString& dbPath, const Source& source, const QStrin
                 verifiedPath(source,clip); // Do not mark exported if the source changed during the copy.
                 manifest.append(QJsonObject{{"path",clip.relative},{"sha256",hash},{"bytes",QString::number(clip.size)}});
                 parents.insert(QFileInfo(input).absolutePath()); ++result.files; result.bytes+=clip.size;
-                if(progress) progress(result.files,total,"复制并校验 · "+clip.relative);
+                if(progress) progress(result.files,total,QCoreApplication::translate("Cam","复制并校验 · %1").arg(clip.relative));
             } catch(const std::exception& e) { complete=false; result.errors << QString::fromUtf8(e.what()); }
         }
         // Include small Tesla event metadata and thumbnails, never follow links.
@@ -427,9 +434,9 @@ Result exportOriginals(const QString& dbPath, const Source& source, const QStrin
     }
     result.canceled=cancel;
     QSaveFile file(result.destination+"/export-manifest.json");
-    if(!file.open(QIODevice::WriteOnly)) fail("无法写入导出清单。");
+    if(!file.open(QIODevice::WriteOnly)) fail(QCoreApplication::translate("Cam","无法写入导出清单。"));
     QJsonDocument json(QJsonObject{{"source",source.id},{"completed_events",result.events},{"canceled",result.canceled},{"errors",QJsonArray::fromStringList(result.errors)},{"files",manifest}});
-    if(file.write(json.toJson())<0 || !file.commit()) fail("导出清单写入失败。");
+    if(file.write(json.toJson())<0 || !file.commit()) fail(QCoreApplication::translate("Cam","导出清单写入失败。"));
     return result;
 }
 static void removeEventLeftovers(const Source& source, const QList<Clip>& clips) {
@@ -446,7 +453,7 @@ static void removeEventLeftovers(const Source& source, const QList<Clip>& clips)
         const QString ext=info.suffix().toLower();
         if(ext!="json" && ext!="jpg" && ext!="png") continue;
         Clip metadata; metadata.relative=QDir(source.root).relativeFilePath(info.absoluteFilePath()); metadata.size=info.size(); metadata.modified=info.lastModified().toMSecsSinceEpoch();
-        if(!QFile::remove(verifiedPath(source,metadata))) fail("无法删除事件信息："+metadata.relative);
+        if(!QFile::remove(verifiedPath(source,metadata))) fail(QCoreApplication::translate("Cam","无法删除事件信息：%1").arg(metadata.relative));
     }
     if(QDir(full).entryList(QDir::NoDotAndDotDot|QDir::AllEntries).isEmpty()) QDir().rmdir(full);
 }
@@ -456,7 +463,7 @@ Result deleteEvents(const QString& dbPath, const Source& source, const QStringLi
     for(const auto& key:keys) {
         if(cancel) break;
         auto favorite=db.query("SELECT favorite FROM flags WHERE source=? AND event=?",{source.id,key});
-        if(favorite.next() && favorite.value(0).toBool()) { result.errors << "已跳过收藏事件："+key; continue; }
+        if(favorite.next() && favorite.value(0).toBool()) { result.errors << QCoreApplication::translate("Cam","已跳过收藏事件：%1").arg(key); continue; }
         const auto clips=db.clips(source.id,key);
         // Preflight the entire event before deleting any of its cameras.
         bool valid=true;
@@ -468,10 +475,10 @@ Result deleteEvents(const QString& dbPath, const Source& source, const QStringLi
             if(cancel) break;
             try {
                 const QString path=verifiedPath(source,clip);
-                if(!QFile::remove(path)) fail("删除失败："+clip.relative);
+                if(!QFile::remove(path)) fail(QCoreApplication::translate("Cam","删除失败：%1").arg(clip.relative));
                 db.query("DELETE FROM clips WHERE source=? AND rel=?",{source.id,clip.relative});
                 ++deleted; ++result.files; result.bytes+=clip.size;
-                if(progress) progress(result.files,total,"已删除 · "+clip.relative);
+                if(progress) progress(result.files,total,QCoreApplication::translate("Cam","已删除 · %1").arg(clip.relative));
             } catch(const std::exception& e) { result.errors << QString::fromUtf8(e.what()); break; }
         }
         if(deleted==clips.size() && !clips.isEmpty()) {

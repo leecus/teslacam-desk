@@ -1,6 +1,8 @@
 #pragma once
 #include "library.h"
 #include "player.h"
+#include "theme.h"
+#include "i18n.h"
 #include <QtWidgets>
 #include <memory>
 
@@ -31,6 +33,8 @@ private:
     QWidget* listTools;
     QPushButton* allDates;
     QPushButton *previous, *next;
+    QToolButton* themeButton;
+    QMenu* languageMenu;
     QList<QWidget*> operationControls;
     QSet<QString> checked;
     Cam::Source current;
@@ -50,6 +54,8 @@ private:
     void refresh();
     void fillTable();
     void scheduleThumbnails();
+    void applyTheme(Theme::Mode mode, bool remember);
+    void updateThemeButton();
     void loadEvent(int row);
     void updateSelection();
     void setBusy(bool value);
@@ -59,6 +65,16 @@ private:
     void exportRange();
     void createThumbnails();
     void report(const QString& title, const Cam::Result& result, const QString& error);
-    void run(const QString& title, std::function<Cam::Result(std::atomic_bool&,const Cam::Progress&)> work, bool thumbsAfter = false);
+    // Job behaviour used to be derived from the title text; it must survive translation.
+    struct JobSpec {
+        QString title;
+        bool thumbsAfter = false;
+        bool browseDuring = true;
+        bool thumbnailJob = false;
+        bool refreshDuring = false;
+    };
+    void run(const JobSpec& spec, std::function<Cam::Result(std::atomic_bool&,const Cam::Progress&)> work);
+    void switchLanguage(I18n::Language language);
+    void rebuildForLanguage(I18n::Language language);
     QStringList selectedKeys() const;
 };
