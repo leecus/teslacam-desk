@@ -35,6 +35,7 @@ private:
     QSet<QString> checked;
     Cam::Source current;
     QString currentEvent;
+    QString autoThumbKey;
     std::atomic_bool canceled{false};
     QThread* worker=nullptr;
     bool closing=false, filling=false;
@@ -48,6 +49,7 @@ private:
     void chooseSource();
     void refresh();
     void fillTable();
+    void scheduleThumbnails();
     void loadEvent(int row);
     void updateSelection();
     void setBusy(bool value);

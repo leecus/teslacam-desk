@@ -13,16 +13,19 @@ bool runFfmpeg(const QString& executable,const QStringList& args,std::atomic_boo
     tail+=process.readAll(); if(error) *error=QString::fromUtf8(tail.right(12000));
     return process.exitStatus()==QProcess::NormalExit && process.exitCode()==0;
 }
+qint64 ffmpegDuration(const QString& log) {
+    static const QRegularExpression pattern("Duration: (\\d+):(\\d{2}):(\\d{2}(?:\\.\\d+)?)");
+    const auto match=pattern.match(log);
+    if(!match.hasMatch()) return 0;
+    return qRound64((match.captured(1).toDouble()*3600+match.captured(2).toDouble()*60+match.captured(3).toDouble())*1000);
+}
 qint64 probeDuration(const QString& executable,const QString& path,std::atomic_bool& cancel) {
     QString metadata;
     // With no output argument FFmpeg prints the input metadata and exits without decoding/re-encoding.
     runFfmpeg(executable,{"-hide_banner","-i",path},cancel,&metadata,30);
     if(cancel) return 0;
-    static const QRegularExpression pattern("Duration: (\\d+):(\\d{2}):(\\d{2}(?:\\.\\d+)?)");
-    const auto match=pattern.match(metadata);
-    if(!match.hasMatch()) fail("无法读取视频时长："+QFileInfo(path).fileName()+"\n"+metadata.right(1000));
-    const qint64 duration=qRound64((match.captured(1).toDouble()*3600+match.captured(2).toDouble()*60+match.captured(3).toDouble())*1000);
-    if(duration<=0) fail("视频时长无效："+path);
+    const qint64 duration=ffmpegDuration(metadata);
+    if(duration<=0) fail("无法读取视频时长："+QFileInfo(path).fileName()+"\n"+metadata.right(1000));
     return duration;
 }
 Result exportRange(const Source& source,const QList<Clip>& clips,const QString& camera,int begin,int end,const QString& destination,const QString& executable,std::atomic_bool& cancel,const Progress& progress) {

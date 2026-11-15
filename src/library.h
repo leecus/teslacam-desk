@@ -8,13 +8,17 @@ namespace Cam {
 struct Source { QString id, root, name, lastScan, status; };
 struct Clip {
     QString relative, event, kind, camera, stamp;
-    qint64 size = 0, modified = 0;
+    qint64 size = 0, modified = 0, duration = 0;
 };
 struct Event {
-    QString key, kind, start, end, thumb;
+    QString key, kind, start, end, thumb, trigger, reason, city;
     qint64 bytes = 0;
     int files = 0, cameras = 0;
     bool favorite = false, exported = false;
+};
+struct PreviewTarget {
+    Clip clip;
+    int offsetMs = 0;
 };
 struct Result {
     bool canceled = false;
@@ -28,9 +32,11 @@ QString dataDirectory();
 QString humanBytes(qint64 bytes);
 QString kindLabel(const QString& kind);
 QString cameraLabel(const QString& camera);
+QString reasonLabel(const QString& reason);
+PreviewTarget previewTarget(const QList<Clip>& clips, const QString& trigger);
 Source identifySource(const QString& path);
-QString verifiedPath(const Source& source, const Clip& clip, bool checkFingerprint = true);
-QString thumbnailPath(const Source& source, const Clip& clip);
+QString verifiedPath(const Source& source, const Clip& clip, bool checkFingerprint = true, bool checkDevice = true);
+QString thumbnailPath(const Source& source, const Clip& clip, int offsetMs = 0);
 
 class Database {
 public:
@@ -48,6 +54,7 @@ public:
                        const QString& search = {}, bool oldest = false);
     QList<Clip> clips(const QString& sourceId, const QString& event);
     void setFavorite(const QString& sourceId, const QString& event, bool favorite);
+    void setClipDuration(const QString& sourceId, const QString& relative, qint64 duration);
 private:
     QString connection;
 };
@@ -58,6 +65,6 @@ Result exportOriginals(const QString& dbPath, const Source& source, const QStrin
                        const QString& destination, std::atomic_bool& cancel,
                        const Progress& progress = {});
 Result deleteEvents(const QString& dbPath, const Source& source, const QStringList& keys,
-                    std::atomic_bool& cancel, const Progress& progress = {});
+                    std::atomic_bool& cancel, const Progress& progress = {}, bool removeLeftovers = false);
 bool isWithin(const QString& root, const QString& path);
 }

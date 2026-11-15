@@ -10,6 +10,7 @@ MainWindow::MainWindow(const QString& initialSource) {
     setWindowTitle("特斯拉影像管家 · TeslaCam Manager"); resize(1480,900); setMinimumSize(1160,760);
     dbPath=Cam::dataDirectory()+"/index.sqlite"; db=std::make_unique<Cam::Database>(dbPath);
     buildUi();
+    connect(player,&EventPlayer::clipDurationKnown,this,[this](const QString& relative,qint64 duration){if(!current.id.isEmpty() && duration>0) db->setClipDuration(current.id,relative,duration);});
     connect(&refreshTimer,&QTimer::timeout,this,[this]{page=0; refresh();}); refreshTimer.setSingleShot(true);
     loadSources();
     if(!initialSource.isEmpty()) {
@@ -80,9 +81,10 @@ void MainWindow::buildUi() {
         if(filling || item->column()!=0) return;
         const QString key=item->data(Qt::UserRole).toString(); if(item->checkState()==Qt::Checked) checked.insert(key); else checked.remove(key); updateSelection();
     });
-    listTools=new QWidget; auto pagination=new QHBoxLayout(listTools); pagination->setContentsMargins(0,0,0,0); auto selectPage=new QPushButton("勾选本页"); auto clearSelection=new QPushButton("清空勾选"); previous=new QPushButton("上一页"); next=new QPushButton("下一页"); pageInfo=new QLabel;
-    pagination->addWidget(selectPage); pagination->addWidget(clearSelection); pagination->addStretch(); pagination->addWidget(previous); pagination->addWidget(pageInfo); pagination->addWidget(next); mid->addWidget(listTools);
+    listTools=new QWidget; auto pagination=new QHBoxLayout(listTools); pagination->setContentsMargins(0,0,0,0); auto selectPage=new QPushButton("勾选本页"); auto selectAll=new QPushButton("勾选全部"); auto clearSelection=new QPushButton("清空勾选"); previous=new QPushButton("上一页"); next=new QPushButton("下一页"); pageInfo=new QLabel;
+    selectAll->setToolTip("勾选当前筛选结果中的全部事件，含其他页"); pagination->addWidget(selectPage); pagination->addWidget(selectAll); pagination->addWidget(clearSelection); pagination->addStretch(); pagination->addWidget(previous); pagination->addWidget(pageInfo); pagination->addWidget(next); mid->addWidget(listTools);
     connect(selectPage,&QPushButton::clicked,this,[this]{for(int i=0;i<table->rowCount();++i) table->item(i,0)->setCheckState(Qt::Checked);});
+    connect(selectAll,&QPushButton::clicked,this,[this]{for(const auto& event:eventList) checked.insert(event.key); fillTable();});
     connect(clearSelection,&QPushButton::clicked,this,[this]{checked.clear(); fillTable();});
     connect(previous,&QPushButton::clicked,this,[this]{if(page>0){--page; fillTable();}}); connect(next,&QPushButton::clicked,this,[this]{++page; fillTable();});
     selectionInfo=new QLabel; selectionInfo->setWordWrap(true); mid->addWidget(selectionInfo);
@@ -201,13 +203,14 @@ void MainWindow::fillTable() {
     for(int row=0;row<count;++row) {
         const auto& e=eventList[first+row]; auto check=new QTableWidgetItem;
         check->setFlags(Qt::ItemIsEnabled|Qt::ItemIsUserCheckable|Qt::ItemIsSelectable); check->setCheckState(checked.contains(e.key)?Qt::Checked:Qt::Unchecked); check->setData(Qt::UserRole,e.key); check->setData(Qt::AccessibleTextRole,"选择事件 "+e.start); table->setItem(row,0,check);
-        auto preview=new QTableWidgetItem; const auto clips=db->clips(current.id,e.key);
+        auto preview=new QTableWidgetItem; const auto clips=db->clips(current.id,e.key); const auto target=Cam::previewTarget(clips,e.trigger);
         preview->setData(Qt::AccessibleTextRole,"录像缩略图");
-        if(!clips.isEmpty()) {const QString thumb=Cam::thumbnailPath(current,clips.first()); if(QFileInfo::exists(thumb)) preview->setIcon(QIcon(thumb)); else {preview->setIcon(style()->standardIcon(QStyle::SP_FileIcon)); preview->setToolTip("尚无缩略图，可在“更多”中生成预览");}}
+        if(!target.clip.relative.isEmpty()) {const QString thumb=Cam::thumbnailPath(current,target.clip,target.offsetMs); if(QFileInfo::exists(thumb)) preview->setIcon(QIcon(thumb)); else {preview->setIcon(style()->standardIcon(QStyle::SP_FileIcon)); preview->setToolTip("尚无缩略图，翻到本页后会自动生成");}}
         table->setItem(row,1,preview);
-        const QString detail=(e.favorite?"★ ":"")+e.start+"\n"+kindText(e.kind)+" · "+QString::number(e.cameras)+" 视角 · "+QString::number(e.files)+" 段"+(e.exported?" · 已导出":"");
+        const QString reason=Cam::reasonLabel(e.reason);
+        const QString detail=(e.favorite?"★ ":"")+e.start+"\n"+kindText(e.kind)+" · "+QString::number(e.cameras)+" 视角 · "+QString::number(e.files)+" 段"+(e.exported?" · 已导出":"")+(reason.isEmpty()?QString():" · "+reason);
         auto text=new QTableWidgetItem(detail); text->setData(Qt::AccessibleTextRole,(e.favorite?QString("已收藏，删除保护，"):QString())+detail);
-        text->setToolTip(e.key+"\n末段起始："+e.end+(e.kind=="recent"?"\n近期行车按固定十分钟分组，属于推断分组。":"")); table->setItem(row,2,text); table->setItem(row,3,new QTableWidgetItem(Cam::humanBytes(e.bytes))); table->setRowHeight(row,72);
+        QString tip=e.key+"\n末段起始："+e.end; if(!e.trigger.isEmpty()) tip+="\n触发 "+e.trigger; if(!e.city.isEmpty()) tip+="\n"+e.city; if(e.kind=="recent") tip+="\n近期行车按固定十分钟分组，属于推断分组。"; text->setToolTip(tip); table->setItem(row,2,text); table->setItem(row,3,new QTableWidgetItem(Cam::humanBytes(e.bytes))); table->setRowHeight(row,72);
         if(e.key==currentEvent) selectedRow=row;
     }
     pageInfo->setText(QString("%1 / %2").arg(page+1).arg(qMax(1,(int(eventList.size())+pageSize-1)/pageSize))); previous->setEnabled(page>0); next->setEnabled(first+count<eventList.size());
@@ -218,22 +221,38 @@ void MainWindow::fillTable() {
     eventStack->setCurrentWidget(eventList.isEmpty()?static_cast<QWidget*>(listEmpty):table);
     if(eventList.isEmpty()) listEmpty->setText(current.lastScan.isEmpty()?"尚未建立索引":"没有匹配的录像");
     previous->setVisible(eventList.size()>pageSize); next->setVisible(eventList.size()>pageSize); pageInfo->setVisible(eventList.size()>pageSize);
-    updateSelection();
+    updateSelection(); scheduleThumbnails();
+}
+void MainWindow::scheduleThumbnails() {
+    if(worker || current.id.isEmpty() || ffmpeg().isEmpty()) return;
+    bool online=false; try { online=Cam::identifySource(current.root).id==current.id; } catch(...) {}
+    if(!online) return;
+    const int first=page*100, last=qMin(first+100,int(eventList.size())); QStringList missing;
+    for(int i=first;i<last;++i) {
+        const auto target=Cam::previewTarget(db->clips(current.id,eventList[i].key),eventList[i].trigger);
+        if(!target.clip.relative.isEmpty() && !QFileInfo::exists(Cam::thumbnailPath(current,target.clip,target.offsetMs))) missing << eventList[i].key;
+    }
+    if(missing.isEmpty()) return;
+    const QString key=current.id+"#"+QString::number(page)+"#"+missing.join(",");
+    if(key==autoThumbKey) return;
+    autoThumbKey=key; createThumbnails();
 }
 void MainWindow::loadEvent(int row) {
     if(row<0 || !table->item(row,0)) return;
     currentEvent=table->item(row,0)->data(Qt::UserRole).toString();
-    const auto clips=db->clips(current.id,currentEvent); QString trigger;
-    if(!clips.isEmpty()) {
+    const auto clips=db->clips(current.id,currentEvent); QString trigger; QString infoTip;
+    for(const auto& e:eventList) if(e.key==currentEvent) {
+        trigger=e.trigger; eventInfo->setText(e.start); favoriteButton->setText(e.favorite?"★ 已收藏":"☆ 收藏");
+        QStringList lines{kindText(e.kind)+" · "+Cam::humanBytes(e.bytes)}; if(!e.reason.isEmpty()) lines << Cam::reasonLabel(e.reason); if(!e.city.isEmpty()) lines << e.city; if(!e.trigger.isEmpty()) lines << "触发 "+e.trigger; infoTip=lines.join("\n"); break;
+    }
+    if(trigger.isEmpty() && !clips.isEmpty()) {
         try {
             const QString folder=QFileInfo(Cam::verifiedPath(current,clips.first())).absolutePath();
             QFile metadata(folder+"/event.json");
             if(metadata.size()<1024*1024 && metadata.open(QIODevice::ReadOnly)) trigger=QJsonDocument::fromJson(metadata.readAll()).object().value("timestamp").toString();
         } catch(...) {}
     }
-    player->load(current,clips,trigger);
-    for(const auto& e:eventList) if(e.key==currentEvent) {eventInfo->setText(e.start); eventInfo->setToolTip(kindText(e.kind)+" · "+Cam::humanBytes(e.bytes)); favoriteButton->setText(e.favorite?"★ 已收藏":"☆ 收藏"); break;}
-    updateSelection();
+    eventInfo->setToolTip(infoTip); player->load(current,clips,trigger); updateSelection();
 }
 QStringList MainWindow::selectedKeys() const {
     if(!checked.isEmpty()) {QStringList keys=checked.values(); keys.sort(); return keys;}
@@ -334,38 +353,50 @@ void MainWindow::clean(bool backupFirst) {
         if(sourceDisk.device()==targetDisk.device()) {QMessageBox::warning(this,"请选择其他磁盘","备份后删除需要把备份保存到另一个磁盘，才能释放当前设备的空间。"); return;}
     }
     QMessageBox confirm(QMessageBox::Warning,backupFirst?"确认备份后删除":"确认永久删除",
-        QString("将%1 %2 条事件的所有摄像头录像，预计释放 %3。\n已排除 %4 条收藏事件。\n\n%5\n不会删除 U 盘目录或其他文件；事件元数据保留。").arg(backupFirst?"备份并校验，然后永久删除":"永久删除").arg(keys.size()).arg(Cam::humanBytes(bytes)).arg(protectedCount).arg(backupFirst?"只有全部原片与事件信息成功备份并校验后，才会开始删除。":"此操作不进入回收站，无法撤销。"),QMessageBox::Cancel,this);
+        QString("将%1 %2 条事件的所有摄像头录像，预计释放 %3。\n已排除 %4 条收藏事件。\n\n%5\n不勾选时保留事件目录里的 json、jpg、png。不会删除 RecentClips。").arg(backupFirst?"备份并校验，然后永久删除":"永久删除").arg(keys.size()).arg(Cam::humanBytes(bytes)).arg(protectedCount).arg(backupFirst?"只有全部原片与事件信息成功备份并校验后，才会开始删除。":"此操作不进入回收站，无法撤销。"),QMessageBox::Cancel,this);
+    auto leftovers=new QCheckBox("同时删除事件目录中的 json、jpg、png，并移除因此变空的目录"); confirm.setCheckBox(leftovers);
     auto proceed=confirm.addButton(backupFirst?"备份成功后永久删除":"永久删除这些录像",QMessageBox::DestructiveRole); confirm.setDefaultButton(QMessageBox::Cancel); confirm.exec(); if(confirm.clickedButton()!=proceed) return;
-    player->clear(); currentEvent.clear(); const auto source=current; const auto path=dbPath;
-    run(backupFirst?"备份并清理":"清理录像",[path,source,keys,destination,backupFirst](auto& cancel,const auto& progress){
+    player->clear(); currentEvent.clear(); const auto source=current; const auto path=dbPath; const bool removeLeftovers=leftovers->isChecked();
+    run(backupFirst?"备份并清理":"清理录像",[path,source,keys,destination,backupFirst,removeLeftovers](auto& cancel,const auto& progress){
         QString saved;
         if(backupFirst) {
             auto backup=Cam::exportOriginals(path,source,keys,destination,cancel,progress); saved=backup.destination;
             if(cancel || !backup.errors.isEmpty() || backup.events!=keys.size()) {backup.errors.prepend("备份未全部完成，未执行删除。"); return backup;}
         }
-        auto result=Cam::deleteEvents(path,source,keys,cancel,progress); result.destination=saved; return result;
+        auto result=Cam::deleteEvents(path,source,keys,cancel,progress,removeLeftovers); result.destination=saved; return result;
     });
 }
+struct ThumbJob { Cam::Clip clip; int offsetMs=0; };
 void MainWindow::createThumbnails() {
     if(worker || current.id.isEmpty() || ffmpeg().isEmpty()) return;
-    QList<Cam::Clip> pending;
-    const int first=page*100, last=qMin(first+100,int(eventList.size()));
-    for(int i=first;i<last;++i) {auto values=db->clips(current.id,eventList[i].key); if(!values.isEmpty() && !QFileInfo::exists(Cam::thumbnailPath(current,values.first()))) pending << values.first();}
+    QList<ThumbJob> pending; const int first=page*100, last=qMin(first+100,int(eventList.size()));
+    for(int i=first;i<last;++i) {
+        const auto target=Cam::previewTarget(db->clips(current.id,eventList[i].key),eventList[i].trigger);
+        if(target.clip.relative.isEmpty() || QFileInfo::exists(Cam::thumbnailPath(current,target.clip,target.offsetMs))) continue;
+        pending.append(ThumbJob{target.clip,target.offsetMs});
+    }
     if(pending.isEmpty()) return;
-    const auto source=current; const auto executable=ffmpeg();
-    run("生成本页缩略图",[source,pending,executable](auto& cancel,const auto& progress){
-        Cam::Result result;
-        for(const auto& clip:pending) {
+    const auto source=current; const auto executable=ffmpeg(); const auto path=dbPath;
+    run("生成本页缩略图",[source,pending,executable,path](auto& cancel,const auto& progress){
+        Cam::Result result; Cam::Database database(path);
+        for(const auto& job:pending) {
             if(cancel) break;
             try {
-                const QString path=Cam::verifiedPath(source,clip), target=Cam::thumbnailPath(source,clip), temporary=target+".tmp.jpg"; QString error;
-                if(Cam::runFfmpeg(executable,{"-hide_banner","-loglevel","error","-y","-i",path,"-frames:v","1","-vf","scale=240:-2",temporary},cancel,&error,20)) {
-                    if(!cancel && QFile::rename(temporary,target)) ++result.files; else QFile::remove(temporary);
-                }
-                else if(!cancel) result.errors << clip.relative+"："+error;
-                QFile::remove(temporary);
+                const QString input=Cam::verifiedPath(source,job.clip), temporary=Cam::thumbnailPath(source,job.clip,job.offsetMs)+".tmp.jpg"; QString log;
+                auto grab=[&](int offset){
+                    QStringList args{"-hide_banner","-y"}; if(offset>0) args << "-ss" << QString::number(offset/1000.0,'f',3);
+                    args << "-i" << input << "-frames:v" << "1" << "-vf" << "scale=240:-2" << temporary; log.clear();
+                    return Cam::runFfmpeg(executable,args,cancel,&log,20);
+                };
+                bool ok=grab(job.offsetMs);
+                if(!ok && job.offsetMs>0 && !cancel) { QFile::remove(temporary); ok=grab(0); }
+                const qint64 duration=Cam::ffmpegDuration(log);
+                if(duration>0) database.setClipDuration(source.id,job.clip.relative,duration);
+                const QString target=Cam::thumbnailPath(source,job.clip,job.offsetMs);
+                if(ok && !cancel && QFile::rename(temporary,target)) ++result.files;
+                else { QFile::remove(temporary); if(!cancel) result.errors << job.clip.relative+"："+log.right(400); }
             } catch(const std::exception& e){result.errors << errorText(e);}
-            if(progress) progress(result.files+int(result.errors.size()),int(pending.size()),"生成缩略图 · "+clip.relative);
+            if(progress) progress(result.files+int(result.errors.size()),int(pending.size()),"生成缩略图 · "+job.clip.relative);
         }
         result.canceled=cancel; return result;
     });

@@ -95,6 +95,40 @@ private slots:
         QVERIFY_THROWS_EXCEPTION(std::runtime_error,Cam::exportRange(source,clips,"back",0,1,temp.path()+"/exports",executable,cancel));
         cancel=true; const auto stopped=Cam::exportRange(source,clips,"front",0,2,temp.path()+"/exports",executable,cancel); QVERIFY(stopped.canceled); QCOMPARE(stopped.files,0);
     }
+    void indexesMetadataDurationAndPreviewFrame() {
+        QTemporaryDir temp; const auto root=temp.path()+"/TeslaCam";
+        write(root+"/SentryClips/event/2026-11-12_14-00-00-back.mp4","back");
+        write(root+"/SentryClips/event/2026-11-12_14-00-00-front.mp4","front");
+        write(root+"/SentryClips/event/event.json","{\"timestamp\":\"2026-11-12T14:00:08\",\"reason\":\"user_interaction_honk\",\"city\":\"上海\"}");
+        const auto source=Cam::identifySource(root); const auto path=temp.path()+"/index.sqlite"; std::atomic_bool cancel=false;
+        Cam::scan(path,source,false,cancel); Cam::Database db(path); const auto events=db.events(source.id);
+        QCOMPARE(events.size(),1); QCOMPARE(events.first().reason,"user_interaction_honk"); QCOMPARE(events.first().city,"上海"); QCOMPARE(events.first().trigger,"2026-11-12T14:00:08");
+        QCOMPARE(Cam::reasonLabel(events.first().reason),"鸣笛"); QCOMPARE(db.events(source.id,{},{},{},0,"上海").size(),1); QCOMPARE(db.events(source.id,{},{},{},0,"鸣笛").size(),1);
+        const auto clips=db.clips(source.id,events.first().key); const auto target=Cam::previewTarget(clips,events.first().trigger);
+        QCOMPARE(target.clip.camera,"front"); QVERIFY(target.offsetMs>=7000 && target.offsetMs<=9000);
+        for(const auto& clip:clips) db.setClipDuration(source.id,clip.relative,5000);
+        Cam::scan(path,source,true,cancel);
+        for(const auto& clip:db.clips(source.id,events.first().key)) QCOMPARE(clip.duration,5000);
+        QCOMPARE(db.events(source.id,"sentry","2026-11-12 14:00:20","2026-11-12 14:00:30").size(),0);
+        QCOMPARE(db.events(source.id,"sentry","2026-11-12 14:00:02","2026-11-12 14:00:04").size(),1);
+        write(root+"/SentryClips/event/2026-11-12_14-00-00-front.mp4","front changed");
+        Cam::scan(path,source,false,cancel);
+        for(const auto& clip:db.clips(source.id,events.first().key)) if(clip.camera=="front") QCOMPARE(clip.duration,0); else QCOMPARE(clip.duration,5000);
+    }
+    void deleteCanRemoveEventFolderButNotRecentRoot() {
+        QTemporaryDir temp; const auto root=temp.path()+"/TeslaCam";
+        write(root+"/SavedClips/keep/2026-11-12_14-00-00-front.mp4"); write(root+"/SavedClips/keep/event.json","{}");
+        write(root+"/SavedClips/drop/2026-11-12_14-05-00-front.mp4"); write(root+"/SavedClips/drop/event.json","{}"); write(root+"/SavedClips/drop/thumb.jpg","jpg");
+        write(root+"/RecentClips/2026-11-12_15-01-00-front.mp4"); write(root+"/RecentClips/event.json","{}");
+        const auto source=Cam::identifySource(root); const auto path=temp.path()+"/index.sqlite"; std::atomic_bool cancel=false;
+        Cam::scan(path,source,false,cancel); Cam::Database db(path); QString kept,dropped,recent;
+        for(const auto& event:db.events(source.id)) { if(event.key.endsWith("keep")) kept=event.key; else if(event.key.endsWith("drop")) dropped=event.key; else if(event.kind=="recent") recent=event.key; }
+        QVERIFY(!kept.isEmpty()); QVERIFY(!dropped.isEmpty()); QVERIFY(!recent.isEmpty());
+        auto result=Cam::deleteEvents(path,source,{kept},cancel,{},false); QCOMPARE(result.files,1); QVERIFY(QFileInfo::exists(root+"/SavedClips/keep/event.json"));
+        result=Cam::deleteEvents(path,source,{dropped,recent},cancel,{},true); QCOMPARE(result.errors.isEmpty(),true); QCOMPARE(result.files,2);
+        QVERIFY(!QFileInfo::exists(root+"/SavedClips/drop/event.json")); QVERIFY(!QFileInfo::exists(root+"/SavedClips/drop/thumb.jpg")); QVERIFY(!QFileInfo::exists(root+"/SavedClips/drop"));
+        QVERIFY(QFileInfo::exists(root+"/RecentClips/event.json")); QVERIFY(QFileInfo::exists(root+"/RecentClips")); QVERIFY(!QFileInfo::exists(root+"/RecentClips/2026-11-12_15-01-00-front.mp4"));
+    }
 };
 QTEST_GUILESS_MAIN(CoreTests)
 #include "core_tests.moc"

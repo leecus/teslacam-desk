@@ -17,6 +17,7 @@ public:
     void saveScreenshot();
 signals:
     void rangeExportRequested();
+    void clipDurationKnown(const QString& relative, qint64 duration);
 private:
     struct Lane {
         QString camera, path;
@@ -34,6 +35,7 @@ private:
     QLabel* time;
     QLabel* marker;
     QSlider* slider;
+    QWidget* coverage;
     QPushButton* play;
     QComboBox* speed;
     QComboBox* cameraChoice;
@@ -48,5 +50,6 @@ private:
     void sync();
     qint64 clipOffset(const Cam::Clip& clip) const;
     void updateLength();
+    void refreshCoverage();
     bool eventFilter(QObject* watched,QEvent* event) override;
 };

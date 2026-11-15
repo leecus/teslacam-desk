@@ -2,6 +2,9 @@
 #ifdef Q_OS_WIN
 #include <windows.h>
 #endif
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <stdexcept>
 #include <filesystem>
 
@@ -30,6 +33,52 @@ QString cameraLabel(const QString& camera) {
         {"left_repeater", "左侧"}, {"right_repeater", "右侧"},
         {"left_pillar", "左前"}, {"right_pillar", "右前"}};
     return labels.value(camera, camera);
+}
+static const QMap<QString, QString>& reasonNames() {
+    static const QMap<QString, QString> labels{{"sentry_aware_object_detection", "检测到物体"},
+        {"user_interaction_honk", "鸣笛"}, {"user_interaction_dashcam", "手动保存"}};
+    return labels;
+}
+QString reasonLabel(const QString& reason) {
+    if (reason.isEmpty()) return {};
+    return reasonNames().value(reason, reason);
+}
+static QDateTime localTime(const QString& text) {
+    QDateTime plain = QDateTime::fromString(text, "yyyy-MM-dd HH:mm:ss");
+    if (plain.isValid()) return plain;
+    QDateTime iso = QDateTime::fromString(text, Qt::ISODate);
+    if (iso.isValid()) return iso.timeSpec()==Qt::LocalTime ? iso : iso.toLocalTime();
+    QDateTime dashed = QDateTime::fromString(text, "yyyy-MM-ddTHH-mm-ss");
+    return dashed.isValid() ? dashed : QDateTime();
+}
+static int cameraRank(const QString& camera) {
+    static const QStringList order{"front", "back", "left_repeater", "right_repeater", "left_pillar", "right_pillar"};
+    const int index = order.indexOf(camera);
+    return index < 0 ? order.size() : index;
+}
+PreviewTarget previewTarget(const QList<Clip>& clips, const QString& trigger) {
+    PreviewTarget best;
+    const QDateTime moment = localTime(trigger);
+    auto prefer = [](const Clip& candidate, const Clip& current) {
+        if (current.relative.isEmpty()) return true;
+        const int rank = cameraRank(candidate.camera) - cameraRank(current.camera);
+        if (rank != 0) return rank < 0;
+        return candidate.stamp < current.stamp;
+    };
+    auto covers = [&](const Clip& clip, int* offset) {
+        const QDateTime stamp = localTime(clip.stamp);
+        if (!moment.isValid() || !stamp.isValid()) return false;
+        const qint64 delta = stamp.msecsTo(moment);
+        const qint64 span = clip.duration > 0 ? clip.duration : 60000;
+        if (delta < 0 || delta >= span) return false;
+        if (offset) *offset = int(delta);
+        return true;
+    };
+    for (const auto& clip : clips) if (covers(clip, nullptr) && prefer(clip, best.clip)) best.clip = clip;
+    if (best.clip.relative.isEmpty()) for (const auto& clip : clips) if (prefer(clip, best.clip)) best.clip = clip;
+    int offset = 0;
+    if (!best.clip.relative.isEmpty() && covers(best.clip, &offset)) best.offsetMs = offset;
+    return best;
 }
 bool isWithin(const QString& root, const QString& path) {
     QString r = QDir::cleanPath(QDir::fromNativeSeparators(root));
@@ -79,8 +128,8 @@ Source identifySource(const QString& path) {
     source.status = "尚未扫描";
     return source;
 }
-QString verifiedPath(const Source& source, const Clip& clip, bool checkFingerprint) {
-    if (identifySource(source.root).id != source.id) fail("磁盘身份已变化，已停止操作。");
+QString verifiedPath(const Source& source, const Clip& clip, bool checkFingerprint, bool checkDevice) {
+    if (checkDevice && identifySource(source.root).id != source.id) fail("磁盘身份已变化，已停止操作。");
     const QString rel = QDir::fromNativeSeparators(clip.relative);
     if (rel.isEmpty() || QDir::isAbsolutePath(rel) || rel.split('/').contains("..")) fail("索引文件路径无效。");
     const QString full = QDir(source.root).absoluteFilePath(rel);
@@ -95,8 +144,10 @@ QString verifiedPath(const Source& source, const Clip& clip, bool checkFingerpri
         fail("文件已变化，请更新索引后重试：" + rel);
     return info.canonicalFilePath();
 }
-QString thumbnailPath(const Source& source, const Clip& clip) {
-    const QByteArray value = (source.id + "/" + clip.relative + "/" + QString::number(clip.size) + "/" + QString::number(clip.modified)).toUtf8();
+QString thumbnailPath(const Source& source, const Clip& clip, int offsetMs) {
+    QString identity = source.id + "/" + clip.relative + "/" + QString::number(clip.size) + "/" + QString::number(clip.modified);
+    if (offsetMs > 0) identity += "/" + QString::number(offsetMs);
+    const QByteArray value = identity.toUtf8();
     const QString dir = dataDirectory() + "/thumbnails";
     QDir().mkpath(dir);
     return dir + "/" + QString::fromLatin1(QCryptographicHash::hash(value, QCryptographicHash::Sha256).toHex()) + ".jpg";
@@ -110,10 +161,16 @@ Database::Database(const QString& path) {
     exec("PRAGMA journal_mode=WAL");
     exec("PRAGMA foreign_keys=ON");
     exec("CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY,root TEXT,name TEXT,last_scan TEXT,status TEXT)");
-    exec("CREATE TABLE IF NOT EXISTS clips(source TEXT,rel TEXT,event TEXT,kind TEXT,stamp TEXT,camera TEXT,bytes INTEGER,modified INTEGER,seen TEXT,PRIMARY KEY(source,rel))");
+    exec("CREATE TABLE IF NOT EXISTS clips(source TEXT,rel TEXT,event TEXT,kind TEXT,stamp TEXT,camera TEXT,bytes INTEGER,modified INTEGER,seen TEXT,duration INTEGER,PRIMARY KEY(source,rel))");
     exec("CREATE INDEX IF NOT EXISTS clips_event ON clips(source,event,stamp)");
     exec("CREATE INDEX IF NOT EXISTS clips_time ON clips(source,stamp,kind)");
     exec("CREATE TABLE IF NOT EXISTS flags(source TEXT,event TEXT,favorite INTEGER DEFAULT 0,exported INTEGER DEFAULT 0,PRIMARY KEY(source,event))");
+    exec("CREATE TABLE IF NOT EXISTS event_meta(source TEXT,event TEXT,trigger TEXT,reason TEXT,city TEXT,PRIMARY KEY(source,event))");
+    bool hasDuration = false;
+    QSqlQuery columns(sql);
+    if (!columns.exec("PRAGMA table_info(clips)")) fail(columns.lastError().text());
+    while (columns.next()) if (columns.value(1).toString() == "duration") hasDuration = true;
+    if (!hasDuration) exec("ALTER TABLE clips ADD COLUMN duration INTEGER");
 }
 Database::~Database() { sql.close(); sql = QSqlDatabase(); QSqlDatabase::removeDatabase(connection); }
 void Database::exec(const QString& text) { QSqlQuery q(sql); if (!q.exec(text)) fail(q.lastError().text()); }
@@ -134,33 +191,57 @@ void Database::saveSource(const Source& s) {
           {s.id, s.root, s.name, s.lastScan, s.status});
 }
 QList<Event> Database::events(const QString& id, const QString& kind, const QString& from, const QString& to, int state, const QString& search, bool oldest) {
-    QString text = "SELECT c.event,c.kind,MIN(c.stamp),MAX(c.stamp),SUM(c.bytes),COUNT(*),COUNT(DISTINCT c.camera),COALESCE(f.favorite,0),COALESCE(f.exported,0) FROM clips c LEFT JOIN flags f ON f.source=c.source AND f.event=c.event WHERE c.source=?";
+    QString text = "SELECT c.event,c.kind,MIN(c.stamp),MAX(c.stamp),SUM(c.bytes),COUNT(*),COUNT(DISTINCT c.camera),COALESCE(f.favorite,0),COALESCE(f.exported,0),COALESCE(MAX(m.trigger),''),COALESCE(MAX(m.reason),''),COALESCE(MAX(m.city),'') FROM clips c LEFT JOIN flags f ON f.source=c.source AND f.event=c.event LEFT JOIN event_meta m ON m.source=c.source AND m.event=c.event WHERE c.source=?";
     QVariantList args{id};
     if (!kind.isEmpty()) { text += " AND c.kind=?"; args << kind; }
     if (state == 1) text += " AND f.favorite=1";
     if (state == 2) text += " AND f.exported=1";
     if (state == 3) text += " AND COALESCE(f.exported,0)=0";
     text += " GROUP BY c.event HAVING 1=1";
-    // Filter complete events by time overlap; never drop sibling cameras from an action.
-    if (!from.isEmpty()) { text += " AND datetime(MAX(c.stamp),'+60 seconds')>?"; args << from; }
+    // Overlap uses a stored duration. Unknown clips still count as about one minute.
+    if (!from.isEmpty()) { text += " AND MAX(datetime(c.stamp, '+' || (COALESCE(NULLIF(c.duration,0),60000)/1000.0) || ' seconds'))>?"; args << from; }
     if (!to.isEmpty()) { text += " AND MIN(c.stamp)<=?"; args << to; }
-    if (!search.isEmpty()) { text += " AND (instr(lower(c.event),lower(?))>0 OR instr(MIN(c.stamp),?)>0)"; args << search << search; }
+    if (!search.isEmpty()) {
+        text += " AND (instr(lower(c.event),lower(?))>0 OR instr(MIN(c.stamp),?)>0 OR instr(lower(COALESCE(MAX(m.reason),'')),lower(?))>0 OR instr(lower(COALESCE(MAX(m.city),'')),lower(?))>0 OR instr(lower(COALESCE(MAX(m.trigger),'')),lower(?))>0";
+        args << search << search << search << search << search;
+        for (auto it = reasonNames().cbegin(); it != reasonNames().cend(); ++it) {
+            if (!it.value().contains(search, Qt::CaseInsensitive)) continue;
+            text += " OR MAX(m.reason)=?"; args << it.key();
+        }
+        text += ")";
+    }
     text += oldest ? " ORDER BY MIN(c.stamp) ASC" : " ORDER BY MIN(c.stamp) DESC";
     auto q = query(text, args); QList<Event> result;
     while (q.next()) {
         Event e; e.key=q.value(0).toString(); e.kind=q.value(1).toString(); e.start=q.value(2).toString(); e.end=q.value(3).toString();
-        e.bytes=q.value(4).toLongLong(); e.files=q.value(5).toInt(); e.cameras=q.value(6).toInt(); e.favorite=q.value(7).toBool(); e.exported=q.value(8).toBool(); result << e;
+        e.bytes=q.value(4).toLongLong(); e.files=q.value(5).toInt(); e.cameras=q.value(6).toInt(); e.favorite=q.value(7).toBool(); e.exported=q.value(8).toBool();
+        e.trigger=q.value(9).toString(); e.reason=q.value(10).toString(); e.city=q.value(11).toString(); result << e;
     }
     return result;
 }
 QList<Clip> Database::clips(const QString& id, const QString& event) {
-    auto q = query("SELECT rel,event,kind,camera,stamp,bytes,modified FROM clips WHERE source=? AND event=? ORDER BY stamp,camera", {id,event});
+    auto q = query("SELECT rel,event,kind,camera,stamp,bytes,modified,COALESCE(duration,0) FROM clips WHERE source=? AND event=? ORDER BY stamp,camera", {id,event});
     QList<Clip> result;
-    while(q.next()) result.append({q.value(0).toString(),q.value(1).toString(),q.value(2).toString(),q.value(3).toString(),q.value(4).toString(),q.value(5).toLongLong(),q.value(6).toLongLong()});
+    while(q.next()) result.append({q.value(0).toString(),q.value(1).toString(),q.value(2).toString(),q.value(3).toString(),q.value(4).toString(),q.value(5).toLongLong(),q.value(6).toLongLong(),q.value(7).toLongLong()});
     return result;
 }
 void Database::setFavorite(const QString& id, const QString& event, bool value) {
     query("INSERT INTO flags(source,event,favorite) VALUES(?,?,?) ON CONFLICT(source,event) DO UPDATE SET favorite=excluded.favorite", {id,event,value});
+}
+void Database::setClipDuration(const QString& id, const QString& relative, qint64 duration) {
+    if (duration <= 0) return;
+    query("UPDATE clips SET duration=? WHERE source=? AND rel=?", {duration, id, relative});
+}
+static void storeEventMeta(Database& db, const QString& sourceId, const QString& event, const QString& videoPath) {
+    const QFileInfo info(QDir(QFileInfo(videoPath).absolutePath()).filePath("event.json"));
+    if (!info.exists()) { db.query("DELETE FROM event_meta WHERE source=? AND event=?", {sourceId, event}); return; }
+    if (!info.isFile() || info.isSymLink() || info.size() <= 0 || info.size() >= 1024 * 1024) return;
+    QFile file(info.absoluteFilePath());
+    if (!file.open(QIODevice::ReadOnly)) return;
+    const auto object = QJsonDocument::fromJson(file.readAll()).object();
+    const QString trigger = object.value("timestamp").toString(), reason = object.value("reason").toString(), city = object.value("city").toString();
+    if (trigger.isEmpty() && reason.isEmpty() && city.isEmpty()) db.query("DELETE FROM event_meta WHERE source=? AND event=?", {sourceId, event});
+    else db.query("INSERT INTO event_meta(source,event,trigger,reason,city) VALUES(?,?,?,?,?) ON CONFLICT(source,event) DO UPDATE SET trigger=excluded.trigger,reason=excluded.reason,city=excluded.city", {sourceId, event, trigger, reason, city});
 }
 static Clip describe(const QString& root, const QFileInfo& info) {
     Clip c; c.relative=QDir(root).relativeFilePath(info.absoluteFilePath()); c.size=info.size(); c.modified=info.lastModified().toMSecsSinceEpoch();
@@ -219,21 +300,22 @@ Result scan(const QString& dbPath, const Source& source, bool rebuild, std::atom
             auto q=db.query("SELECT rel,bytes,modified FROM clips WHERE source=?",{source.id});
             while(q.next()) known.insert(q.value(0).toString(),{q.value(1).toLongLong(),q.value(2).toLongLong()});
         }
-        bool transaction=false;
+        bool transaction=false; QSet<QString> metaEvents;
         try {
             for(int i=0;i<paths.size() && !cancel;++i) {
                 if(!transaction) { if(!db.sql.transaction()) fail(db.sql.lastError().text()); transaction=true; }
                 QFileInfo info(paths[i]);
                 if(!info.exists() || !info.isFile()) fail("扫描时文件消失，请重新扫描："+paths[i]);
                 const Clip c=describe(source.root,info);
-                // Validate before indexing: a directory could have changed since enumeration.
-                verifiedPath(source,c);
+                // Device identity is checked when a batch commits. Each file still has to stay inside the root.
+                verifiedPath(source,c,true,false);
+                if(!metaEvents.contains(c.event)) { metaEvents.insert(c.event); storeEventMeta(db,source.id,c.event,paths[i]); }
                 const auto previous=known.constFind(c.relative);
                 const bool changed=previous==known.cend() || previous->first!=c.size || previous->second!=c.modified;
                 if(!changed && !rebuild)
                     db.query("UPDATE clips SET seen=? WHERE source=? AND rel=?",{generation,source.id,c.relative});
                 else {
-                    db.query("INSERT INTO clips VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(source,rel) DO UPDATE SET event=excluded.event,kind=excluded.kind,stamp=excluded.stamp,camera=excluded.camera,bytes=excluded.bytes,modified=excluded.modified,seen=excluded.seen",
+                    db.query("INSERT INTO clips(source,rel,event,kind,stamp,camera,bytes,modified,seen) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(source,rel) DO UPDATE SET event=excluded.event,kind=excluded.kind,stamp=excluded.stamp,camera=excluded.camera,bytes=excluded.bytes,modified=excluded.modified,seen=excluded.seen,duration=CASE WHEN clips.bytes!=excluded.bytes OR clips.modified!=excluded.modified THEN NULL ELSE clips.duration END",
                         {source.id,c.relative,c.event,c.kind,c.stamp,c.camera,c.size,c.modified,generation});
                     if(changed) {
                         db.query("UPDATE flags SET exported=0 WHERE source=? AND event=?",{source.id,c.event});
@@ -242,16 +324,21 @@ Result scan(const QString& dbPath, const Source& source, bool rebuild, std::atom
                 }
                 ++result.files; result.bytes+=c.size;
                 if(result.files%100==0 || i==paths.size()-1) {
+                    if(identifySource(source.root).id!=source.id) fail("设备已断开或被更换。");
                     if(!db.sql.commit()) fail(db.sql.lastError().text()); transaction=false;
                     if(progress) progress(result.files,int(paths.size()),"建立索引 · "+c.relative);
                 }
             }
-            if(transaction && !db.sql.commit()) fail(db.sql.lastError().text());
+            if(transaction) {
+                if(identifySource(source.root).id!=source.id) fail("设备已断开或被更换。");
+                if(!db.sql.commit()) fail(db.sql.lastError().text());
+            }
         } catch(...) { if(transaction) db.sql.rollback(); throw; }
         result.canceled=cancel;
         if(!cancel) {
             if(identifySource(source.root).id!=source.id) fail("设备已断开或被更换。");
             auto q=db.query("DELETE FROM clips WHERE source=? AND seen<>?",{source.id,generation}); result.removed=int(q.numRowsAffected());
+            db.query("DELETE FROM event_meta WHERE source=? AND event NOT IN (SELECT DISTINCT event FROM clips WHERE source=?)",{source.id,source.id});
             current.lastScan=QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss"); current.status="索引已完成";
         } else current.status="扫描已中断 · 可继续更新";
         db.saveSource(current);
@@ -345,7 +432,25 @@ Result exportOriginals(const QString& dbPath, const Source& source, const QStrin
     if(file.write(json.toJson())<0 || !file.commit()) fail("导出清单写入失败。");
     return result;
 }
-Result deleteEvents(const QString& dbPath, const Source& source, const QStringList& keys, std::atomic_bool& cancel, const Progress& progress) {
+static void removeEventLeftovers(const Source& source, const QList<Clip>& clips) {
+    if(clips.isEmpty()) return;
+    const QString parentRel=QFileInfo(clips.first().relative).path();
+    const QString folderName=QFileInfo(parentRel).fileName();
+    static const QStringList reserved{"recentclips","savedclips","sentryclips","teslacam"};
+    if(parentRel.isEmpty() || parentRel=="." || reserved.contains(folderName.toLower())) return;
+    for(const auto& clip:clips) if(QFileInfo(clip.relative).path()!=parentRel) return;
+    const QString full=QDir(source.root).filePath(parentRel);
+    QFileInfo directory(full);
+    if(!directory.exists() || !directory.isDir() || linked(directory)) return;
+    for(const auto& info:QDir(full).entryInfoList(QDir::Files|QDir::NoSymLinks)) {
+        const QString ext=info.suffix().toLower();
+        if(ext!="json" && ext!="jpg" && ext!="png") continue;
+        Clip metadata; metadata.relative=QDir(source.root).relativeFilePath(info.absoluteFilePath()); metadata.size=info.size(); metadata.modified=info.lastModified().toMSecsSinceEpoch();
+        if(!QFile::remove(verifiedPath(source,metadata))) fail("无法删除事件信息："+metadata.relative);
+    }
+    if(QDir(full).entryList(QDir::NoDotAndDotDot|QDir::AllEntries).isEmpty()) QDir().rmdir(full);
+}
+Result deleteEvents(const QString& dbPath, const Source& source, const QStringList& keys, std::atomic_bool& cancel, const Progress& progress, bool removeLeftovers) {
     Result result; Database db(dbPath); int total=0;
     for(const auto& key:keys) total+=int(db.clips(source.id,key).size());
     for(const auto& key:keys) {
@@ -369,7 +474,14 @@ Result deleteEvents(const QString& dbPath, const Source& source, const QStringLi
                 if(progress) progress(result.files,total,"已删除 · "+clip.relative);
             } catch(const std::exception& e) { result.errors << QString::fromUtf8(e.what()); break; }
         }
-        if(deleted==clips.size() && !clips.isEmpty()) ++result.events;
+        if(deleted==clips.size() && !clips.isEmpty()) {
+            ++result.events;
+            db.query("DELETE FROM event_meta WHERE source=? AND event=?",{source.id,key});
+            if(removeLeftovers && !cancel) {
+                try { removeEventLeftovers(source,clips); }
+                catch(const std::exception& e) { result.errors << QString::fromUtf8(e.what()); }
+            }
+        }
     }
     result.canceled=cancel;
     return result;
