@@ -1,8 +1,22 @@
 # TeslaCam Desk · 特斯拉影像管家
 
-Windows 桌面工具，C++20 + Qt 6.8 + SQLite + FFmpeg。视频和索引均在本地处理。当前为本地开发版本，未制作发布包。
+Windows 桌面工具，C++20 + Qt 6.8 + SQLite + FFmpeg。视频和索引均在本地处理。
 
 Windows supported. macOS and Linux planned.
+
+## 下载
+
+[下载 v0.1.0 Windows x64 ZIP](https://github.com/leecus/teslacam-desk/releases/download/v0.1.0/TeslaCamDesk-v0.1.0-windows-x64.zip) · [版本说明](https://github.com/leecus/teslacam-desk/releases/tag/v0.1.0)
+
+下载 Release 中的 `TeslaCamDesk-v0.1.0-windows-x64.zip`，完整解压后运行 `TeslaCamManager.exe`。运行库和 FFmpeg 已包含在包内。
+
+## 截图
+
+截图使用生成的演示视频，不包含真实行车画面。
+
+![事件列表与四路同步预览](docs/screenshots/library.jpg)
+
+![日期筛选与单视角裁剪导出](docs/screenshots/filter-and-export.jpg)
 
 ## 使用
 
@@ -50,4 +64,10 @@ setup-dev 仅在项目 .deps 中准备 Python 虚拟环境和 Qt SDK。build.ps1
 
 已实现本地索引、时间查询、多路预览、原片导出、单视角裁剪、截图、收藏和手动批量清理。暂不包含地图、图像内容识别、多摄像头拼接导出和自动清理。尚需用真实车型/U 盘样本验证命名、编码及事件元数据差异。
 
-第三方依赖：Qt 动态链接（LGPL/GPL/商业许可体系）、SQLite、FFmpeg（当前 imageio-ffmpeg Windows 二进制包含 libx264，实际许可和构建参数可运行 ffmpeg -version 查看）。正式分发前需按所选依赖许可证准备相应材料；本目录未生成发布包。
+## 发布包
+
+用户明确要求发布时，使用 `python package-release.py --version 0.1.0` 生成版本化的 Windows x64 ZIP。准备材料位于 `.deps/release-sources/`：Qt 6.8.3 三个模块的源码归档、FFmpeg 7.1 与 9.0.2 源码、Gyan 的原始 essentials ZIP，以及 DirectX Shader Compiler 的许可文件。来源 URL 见脚本。脚本校验 FFmpeg 与上游原包一致，收集动态运行库及许可材料，并生成逐文件清单和 SHA-256 校验文件；同版本的历史包不会被覆盖。
+
+使用 `python tests/verify_release.py dist/TeslaCamDesk-v0.1.0-windows-x64.zip` 校验 ZIP、文件清单、x64 DLL 依赖，并在含中文及空格的临时路径、隔离 PATH 的环境中启动应用、创建 SQLite 索引和验证 FFmpeg 编解码。
+
+第三方依赖：Qt 动态链接（LGPL-3.0）、SQLite、Qt 多媒体使用的 FFmpeg 7.1 动态库（LGPL-2.1-or-later），以及独立调用的 FFmpeg 9.0.2 命令行程序（GPL-3.0-or-later）。发布包附许可文本、模块 SBOM、构建信息与来源索引；相关源码归档在同一 Release 提供下载。
