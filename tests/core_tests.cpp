@@ -71,6 +71,24 @@ private slots:
         QFile preserved(recovered.backupDirectory+"/damaged.sqlite-wal"); QVERIFY(preserved.open(QIODevice::ReadOnly)); QCOMPARE(preserved.readAll(),journal);
         Cam::Database db(path); QCOMPARE(db.sources().first().id,QString("wal-device"));
     }
+    void hotRollbackJournalIsRecoveredBeforeCheckingIntegrity() {
+        QTemporaryDir temp; const QString live=temp.path()+"/live.sqlite",path=temp.path()+"/interrupted.sqlite";
+        {
+            Cam::Database db(live); db.exec("PRAGMA cache_size=1");
+            db.saveSource({"device","F:/TeslaCam","before",{},"ready"});
+            db.exec("CREATE TABLE padding(content BLOB)");
+            db.exec("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<64) INSERT INTO padding SELECT zeroblob(4096) FROM n");
+            QVERIFY(db.sql.transaction());
+            db.exec("UPDATE sources SET name='uncommitted'");
+            db.exec("UPDATE padding SET content=zeroblob(8192)");
+            QVERIFY(QFile::copy(live,path)); QVERIFY(QFile::copy(live+"-journal",path+"-journal"));
+            QVERIFY(db.sql.rollback());
+        }
+        const auto recovered=Cam::recoverIndex(path);
+        QVERIFY(recovered.backupDirectory.isEmpty());
+        Cam::Database db(path); QCOMPARE(db.sources().first().name,QString("before"));
+        auto check=db.query("PRAGMA quick_check"); QVERIFY(check.next()); QCOMPARE(check.value(0).toString(),QString("ok"));
+    }
     void scanSkipsBadFilesWithoutDroppingExistingRows() {
         QTemporaryDir temp; const QString root=temp.path()+"/TeslaCam",path=temp.path()+"/index.sqlite";
         const QString front=root+"/SavedClips/event/2026-11-12_14-00-00-front.mp4";

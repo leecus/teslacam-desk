@@ -260,7 +260,7 @@ IndexRecovery recoverIndex(const QString& path) {
     QTemporaryDir inspection;
     if(!inspection.isValid()) fail(QCoreApplication::translate("Cam","无法创建索引检查目录"));
     const QString checkPath=inspection.filePath("index.sqlite");
-    for(const QString& suffix:QStringList{"","-wal"}) {
+    for(const QString& suffix:QStringList{"","-wal","-journal"}) {
         const QString original=path+suffix;
         if(!QFileInfo::exists(original)) continue;
         const QFileInfo before(original);
@@ -273,7 +273,9 @@ IndexRecovery recoverIndex(const QString& path) {
     const QString connection="index-check-"+QUuid::createUuid().toString(QUuid::Id128);
     auto check=QSqlDatabase::addDatabase("QSQLITE",connection);
     check.setDatabaseName(checkPath);
-    check.setConnectOptions("QSQLITE_OPEN_READONLY;QSQLITE_BUSY_TIMEOUT=5000");
+    // The private copy must be writable so SQLite can roll back a hot journal
+    // before integrity checks. The original files remain untouched here.
+    check.setConnectOptions("QSQLITE_BUSY_TIMEOUT=5000");
     QList<Source> sources;
     struct Flag {QString source,event; bool favorite;};
     QList<Flag> flags;
@@ -341,7 +343,7 @@ IndexRecovery recoverIndex(const QString& path) {
         for(auto it=moved.crbegin();it!=moved.crend();++it)
             QFile::rename(QDir(backup).filePath(QFileInfo(path+*it).fileName()),path+*it);
     };
-    for(const QString& suffix:QStringList{"","-wal","-shm"}) {
+    for(const QString& suffix:QStringList{"","-wal","-shm","-journal"}) {
         const QString original=path+suffix;
         if(!QFileInfo::exists(original)) continue;
         if(!QFile::rename(original,QDir(backup).filePath(QFileInfo(original).fileName()))) {
