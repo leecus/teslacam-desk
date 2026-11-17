@@ -43,6 +43,10 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "Leecus and contributors"
 !define MUI_ABORTWARNING
 !define MUI_FINISHPAGE_NOAUTOCLOSE
 !define MUI_UNFINISHPAGE_NOAUTOCLOSE
+; NSIS resolves paths relative to this script's directory.
+!define MUI_ICON "..\assets\teslacam.ico"
+!define MUI_UNICON "..\assets\teslacam.ico"
+!define MUI_COMPONENTSPAGE_NODESC
 
 ; Remember the chosen language for the uninstaller.
 !define MUI_LANGDLL_REGISTRY_ROOT "HKCU"
@@ -52,6 +56,7 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "Leecus and contributors"
 ; ---- Pages (must come BEFORE MUI_LANGUAGE per MUI2 requirement) ----
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
 
@@ -66,10 +71,10 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "Leecus and contributors"
 ; ---- Localized strings ----
 LangString SEC_MAIN ${LANG_ENGLISH} "Application files (required)"
 LangString SEC_MAIN ${LANG_SIMPCHINESE} "程序文件（必需）"
-LangString SEC_STARTMENU ${LANG_ENGLISH} "Start Menu shortcut"
-LangString SEC_STARTMENU ${LANG_SIMPCHINESE} "开始菜单快捷方式"
-LangString SEC_DESKTOP ${LANG_ENGLISH} "Desktop shortcut"
-LangString SEC_DESKTOP ${LANG_SIMPCHINESE} "桌面快捷方式"
+LangString SEC_STARTMENU ${LANG_ENGLISH} "Create Start Menu shortcuts"
+LangString SEC_STARTMENU ${LANG_SIMPCHINESE} "创建开始菜单快捷方式"
+LangString SEC_DESKTOP ${LANG_ENGLISH} "Create desktop shortcut"
+LangString SEC_DESKTOP ${LANG_SIMPCHINESE} "创建桌面快捷方式"
 ; Uninstaller strings use the "un." prefix.
 LangString un.DATA_KEPT ${LANG_ENGLISH} "Your index and thumbnails were KEPT in:\n$LOCALAPPDATA\LocalTools\TeslaCamManager"
 LangString un.DATA_KEPT ${LANG_SIMPCHINESE} "您的索引和缩略图已保留在：\n$LOCALAPPDATA\LocalTools\TeslaCamManager"
@@ -98,6 +103,7 @@ Section "$(SEC_MAIN)" SEC_MAIN
   WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "${APP_NAME} ${VERSION}"
   WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
   WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "${PUBLISHER}"
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" '"$INSTDIR\${APP_EXE}",0'
   WriteRegStr HKCU "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "${UNINST_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
   WriteRegStr HKCU "${UNINST_KEY}" "QuietUninstallString" '"$INSTDIR\Uninstall.exe" /S'
@@ -114,7 +120,7 @@ Section "$(SEC_STARTMENU)" SEC_STARTMENU
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
 SectionEnd
 
-Section /o "$(SEC_DESKTOP)" SEC_DESKTOP
+Section "$(SEC_DESKTOP)" SEC_DESKTOP
   CreateShortcut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
 SectionEnd
 

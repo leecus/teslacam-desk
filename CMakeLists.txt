@@ -18,6 +18,12 @@ endif()
 qt_add_executable(TeslaCamManager WIN32 src/main.cpp src/window.cpp src/window.h src/player.cpp src/player.h src/theme.cpp src/theme.h src/i18n.cpp src/i18n.h)
 target_link_libraries(TeslaCamManager PRIVATE camcore Qt6::Widgets Qt6::Multimedia Qt6::MultimediaWidgets)
 target_compile_definitions(TeslaCamManager PRIVATE TESLACAM_VERSION="${PROJECT_VERSION}")
+if(WIN32)
+  target_sources(TeslaCamManager PRIVATE src/app.rc)
+  target_include_directories(TeslaCamManager PRIVATE "${CMAKE_SOURCE_DIR}")
+endif()
+qt_add_resources(TeslaCamManager "app_icons" PREFIX "/icons" BASE "${CMAKE_SOURCE_DIR}/assets"
+  FILES assets/teslacam.svg)
 set_target_properties(TeslaCamManager PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
 # Chinese is the source language; English lives in the compiled translation, embedded so the
 # executable stays self-contained.

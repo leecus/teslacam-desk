@@ -30,6 +30,7 @@ private:
 
 int main(int argc,char* argv[]) {
     Application app(argc,argv); app.setApplicationName("TeslaCamManager"); app.setOrganizationName("LocalTools"); app.setApplicationVersion(TESLACAM_VERSION); app.setStyle("Fusion");
+    app.setWindowIcon(QIcon(":/icons/teslacam.svg"));
     QCommandLineParser parser; parser.setApplicationDescription(QCoreApplication::translate("main","特斯拉影像管家：本地录像索引与事件管理")); parser.addHelpOption(); parser.addVersionOption();
     parser.addOption({"source",QCoreApplication::translate("main","选择初始录像目录（不会自动扫描）"),"path"});
     parser.addOption({"theme",QCoreApplication::translate("main","启动时使用 light 或 dark 外观（不写入设置）"),"light|dark"});
