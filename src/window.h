@@ -10,6 +10,8 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit MainWindow(const QString& initialSource = {});
+    ~MainWindow() override;
+    void showFailure(const QString& message);
 protected:
     void closeEvent(QCloseEvent* event) override;
 private:
@@ -41,11 +43,14 @@ private:
     QString currentEvent;
     QString autoThumbKey;
     std::atomic_bool canceled{false};
-    QThread* worker=nullptr;
+    QPointer<QThread> worker;
     bool closing=false, filling=false;
     bool allowBrowse=true, thumbnailJob=false;
+    bool indexFaulted=false;
     int page=0;
     QTimer refreshTimer;
+    QTimer durationSaveTimer;
+    QMap<QString,QMap<QString,qint64>> pendingDurations;
     QElapsedTimer jobElapsed;
     QString ffmpeg() const;
     void buildUi();
@@ -57,6 +62,7 @@ private:
     void applyTheme(Theme::Mode mode, bool remember);
     void updateThemeButton();
     void loadEvent(int row);
+    void saveDurations();
     void updateSelection();
     void setBusy(bool value);
     void startScan(bool rebuild);

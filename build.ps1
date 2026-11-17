@@ -1,5 +1,6 @@
 param(
     [string]$QtRoot = (Join-Path $PSScriptRoot '.deps\Qt\6.8.3\msvc2022_64'),
+    [string]$FfmpegPath,
     [switch]$SkipTests,
     [switch]$Clean
 )
@@ -43,12 +44,26 @@ $buildArguments = @('--build', $buildDirectory, '--parallel', '4')
 if ($needsClean) { $buildArguments += '--clean-first' }
 & $cmake @buildArguments
 if ($LASTEXITCODE -ne 0) { throw 'Compilation failed.' }
-if (-not $SkipTests) {
+# Prefer the reproducible minimal CLI, then an existing local CLI. Never replace
+# either with the larger Python fallback on every incremental build.
+if (-not $FfmpegPath) {
+    $minimalFfmpeg = Join-Path $PSScriptRoot '.deps\ffmpeg-minimal\ffmpeg-9.0.2\ffmpeg.exe'
+    $localFfmpeg = Join-Path $PSScriptRoot 'bin\ffmpeg.exe'
+    if (Test-Path -LiteralPath $minimalFfmpeg) { $FfmpegPath = $minimalFfmpeg }
+    elseif (Test-Path -LiteralPath $localFfmpeg) { $FfmpegPath = $localFfmpeg }
+}
+if (-not $FfmpegPath) {
     $ffmpegPython = Join-Path $PSScriptRoot '.deps\python\Scripts\python.exe'
     if (Test-Path -LiteralPath $ffmpegPython) {
-        $ffmpegPath = & $ffmpegPython -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())'
-        if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $ffmpegPath)) { Copy-Item -LiteralPath $ffmpegPath -Destination (Join-Path $PSScriptRoot 'bin\ffmpeg.exe') -Force }
+        $FfmpegPath = & $ffmpegPython -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())'
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot locate the fallback FFmpeg CLI.' }
     }
+}
+if (-not $FfmpegPath -or -not (Test-Path -LiteralPath $FfmpegPath)) { throw 'Supply -FfmpegPath or build tools/ffmpeg-minimal/build.sh first.' }
+$ffmpegSource = (Resolve-Path -LiteralPath $FfmpegPath).Path
+$ffmpegTarget = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'bin\ffmpeg.exe'))
+if ($ffmpegSource -ne $ffmpegTarget) { Copy-Item -LiteralPath $ffmpegSource -Destination $ffmpegTarget -Force }
+if (-not $SkipTests) {
     $ctest = Join-Path (Split-Path $cmake) 'ctest.exe'
     & $ctest --test-dir $buildDirectory --output-on-failure
     if ($LASTEXITCODE -ne 0) { throw 'Core safety tests failed.' }
@@ -57,9 +72,4 @@ $exe = Join-Path $PSScriptRoot 'bin\TeslaCamManager.exe'
 # This is the local development output with its runtime dependencies, not a release package.
 & (Join-Path $QtRoot 'bin\windeployqt.exe') --release --no-translations --no-system-d3d-compiler --no-opengl-sw --no-compiler-runtime $exe
 if ($LASTEXITCODE -ne 0) { throw 'Local Qt runtime setup failed.' }
-$ffmpegPython = Join-Path $PSScriptRoot '.deps\python\Scripts\python.exe'
-if (Test-Path -LiteralPath $ffmpegPython) {
-    $ffmpegPath = & $ffmpegPython -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())'
-    if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $ffmpegPath)) { Copy-Item -LiteralPath $ffmpegPath -Destination (Join-Path $PSScriptRoot 'bin\ffmpeg.exe') -Force }
-}
 Write-Output "Built and verified: $exe"

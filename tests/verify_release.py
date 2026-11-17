@@ -132,9 +132,13 @@ def main() -> None:
     command = [str(root / 'ffmpeg.exe'), '-hide_banner', '-loglevel', 'error', '-nostdin', '-f', 'lavfi',
                '-i', 'testsrc2=size=320x180:rate=15', '-t', '2', '-c:v', 'libx264', str(video)]
     subprocess.run(command, cwd=workspace, env=env, check=True, capture_output=True, timeout=40, creationflags=flags)
-    subprocess.run([str(root / 'ffmpeg.exe'), '-hide_banner', '-loglevel', 'error', '-nostdin', '-i',
-                    str(video), '-f', 'null', '-'], cwd=workspace, env=env, check=True,
-                   capture_output=True, timeout=40, creationflags=flags)
+    # Decode verification mirrors the app's actual thumbnail path: H.264 decode + scale + MJPEG encode.
+    thumbnail = workspace / 'synthetic verification.jpg'
+    subprocess.run([str(root / 'ffmpeg.exe'), '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', '-i',
+                    str(video), '-frames:v', '1', '-vf', 'scale=240:-2', str(thumbnail)], cwd=workspace,
+                   env=env, check=True, capture_output=True, timeout=40, creationflags=flags)
+    if not thumbnail.is_file() or thumbnail.stat().st_size == 0:
+        raise RuntimeError('The packaged FFmpeg did not produce a thumbnail.')
     print(json.dumps({'archive': str(args.archive.resolve()), 'sha256': digest(args.archive),
                       'verified_files': len(actual), 'verified_pe_files': len(pe_files),
                       'startup_exit': result.returncode, 'ffmpeg_roundtrip': 'passed',

@@ -8,9 +8,13 @@ static void failUi(const QString& s) {throw std::runtime_error(s.toUtf8().constD
 static QString kindText(const QString& kind) {return kind=="recent"?QCoreApplication::translate("MainWindow","近期行车"):Cam::kindLabel(kind);}
 MainWindow::MainWindow(const QString& initialSource) {
     setWindowTitle(tr("特斯拉影像管家 · TeslaCam Manager")); resize(1480,900); setMinimumSize(1160,760);
-    dbPath=Cam::dataDirectory()+"/index.sqlite"; db=std::make_unique<Cam::Database>(dbPath);
+    dbPath=Cam::dataDirectory()+"/index.sqlite";
+    const auto recovered=Cam::recoverIndex(dbPath);
+    db=std::make_unique<Cam::Database>(dbPath);
     buildUi();
     connect(&refreshTimer,&QTimer::timeout,this,[this]{page=0; refresh();}); refreshTimer.setSingleShot(true);
+    durationSaveTimer.setSingleShot(true);
+    connect(&durationSaveTimer,&QTimer::timeout,this,&MainWindow::saveDurations);
     loadSources();
     if(!initialSource.isEmpty()) {
         auto s=Cam::identifySource(initialSource);
@@ -18,6 +22,26 @@ MainWindow::MainWindow(const QString& initialSource) {
         db->saveSource(s); loadSources(s.id);
     }
     refresh();
+    if(!recovered.backupDirectory.isEmpty()) {
+        status->setText(tr("索引已恢复，请扫描重建"));
+        status->setToolTip(tr("损坏索引已备份到：%1").arg(QDir::toNativeSeparators(recovered.backupDirectory)));
+        QFile log(Cam::dataDirectory()+"/operations.log");
+        if(log.open(QIODevice::Append|QIODevice::Text)) log.write((QDateTime::currentDateTime().toString(Qt::ISODate)+" index recovered: "+recovered.backupDirectory+"\n").toUtf8());
+    }
+}
+MainWindow::~MainWindow() {
+    closing=true; canceled=true;
+    if(worker) {worker->wait(); delete worker.data();}
+    if(player) player->clear();
+}
+void MainWindow::showFailure(const QString& message) {
+    canceled=true; indexFaulted=true; refreshTimer.stop(); durationSaveTimer.stop(); filling=false;
+    player->pause();
+    status->setText(tr("操作失败，请重新打开应用")); status->setToolTip(message);
+    for(auto control:operationControls) control->setEnabled(false);
+    table->setEnabled(false); player->setEnabled(false);
+    QFile log(Cam::dataDirectory()+"/operations.log");
+    if(log.open(QIODevice::Append|QIODevice::Text)) log.write((QDateTime::currentDateTime().toString(Qt::ISODate)+" UI error: "+message+"\n").toUtf8());
 }
 QString MainWindow::ffmpeg() const {
     const QString local=QCoreApplication::applicationDirPath()+"/ffmpeg.exe";
@@ -107,7 +131,11 @@ void MainWindow::buildUi() {
     auto right=new QWidget; auto rl=new QVBoxLayout(right); rl->setContentsMargins(0,0,0,0); rl->setSpacing(10);
     auto eventHeader=new QHBoxLayout; eventInfo=new QLabel(tr("预览")); eventInfo->setWordWrap(true); eventInfo->setObjectName("section"); eventHeader->addWidget(eventInfo,1); favoriteButton=new QPushButton(tr("☆ 收藏")); eventHeader->addWidget(favoriteButton); rl->addLayout(eventHeader);
     player=new EventPlayer; rl->addWidget(player,1);
-    connect(player,&EventPlayer::clipDurationKnown,this,[this](const QString& relative,qint64 duration){if(!current.id.isEmpty() && duration>0) db->setClipDuration(current.id,relative,duration);});
+    connect(player,&EventPlayer::clipDurationKnown,this,[this](const QString& relative,qint64 duration){
+        if(current.id.isEmpty() || duration<=0 || indexFaulted) return;
+        pendingDurations[current.id][relative]=duration;
+        durationSaveTimer.start(200);
+    });
     auto utility=new QHBoxLayout; revealButton=new QPushButton(tr("打开文件位置")); utility->addWidget(revealButton); utility->addStretch(); rl->addLayout(utility);
     connect(player,&EventPlayer::rangeExportRequested,this,&MainWindow::exportRange);
     connect(revealButton,&QPushButton::clicked,this,[this]{
@@ -229,7 +257,7 @@ void MainWindow::refresh() {
     fillTable(); setBusy(worker!=nullptr);
 }
 void MainWindow::fillTable() {
-    filling=true; const int pageSize=100; page=qBound(0,page,qMax(0,(int(eventList.size())-1)/pageSize));
+    QScopedValueRollback<bool> fillingGuard(filling,true); const int pageSize=100; page=qBound(0,page,qMax(0,(int(eventList.size())-1)/pageSize));
     const int first=page*pageSize, count=qMin(pageSize,int(eventList.size())-first); table->setRowCount(qMax(0,count));
     int selectedRow=-1;
     for(int row=0;row<count;++row) {
@@ -255,7 +283,8 @@ void MainWindow::fillTable() {
     eventStack->setCurrentWidget(eventList.isEmpty()?static_cast<QWidget*>(listEmpty):table);
     if(eventList.isEmpty()) listEmpty->setText(current.lastScan.isEmpty()?tr("尚未建立索引"):tr("没有匹配的录像"));
     previous->setVisible(eventList.size()>pageSize); next->setVisible(eventList.size()>pageSize); pageInfo->setVisible(eventList.size()>pageSize);
-    updateSelection(); scheduleThumbnails();
+    updateSelection();
+    QTimer::singleShot(0,this,&MainWindow::scheduleThumbnails);
 }
 void MainWindow::scheduleThumbnails() {
     if(worker || current.id.isEmpty() || ffmpeg().isEmpty()) return;
@@ -291,6 +320,17 @@ void MainWindow::loadEvent(int row) {
 QStringList MainWindow::selectedKeys() const {
     if(!checked.isEmpty()) {QStringList keys=checked.values(); keys.sort(); return keys;}
     return currentEvent.isEmpty()?QStringList():QStringList{currentEvent};
+}
+void MainWindow::saveDurations() {
+    if(indexFaulted || pendingDurations.isEmpty()) return;
+    if(worker) {durationSaveTimer.start(400); return;}
+    if(!db->sql.transaction()) failUi(db->sql.lastError().text());
+    try {
+        for(auto source=pendingDurations.cbegin();source!=pendingDurations.cend();++source)
+            for(auto clip=source->cbegin();clip!=source->cend();++clip) db->setClipDuration(source.key(),clip.key(),clip.value());
+        if(!db->sql.commit()) failUi(db->sql.lastError().text());
+        pendingDurations.clear();
+    } catch(...) {db->sql.rollback(); throw;}
 }
 void MainWindow::updateSelection() {
     const auto keys=selectedKeys(); qint64 bytes=0; int protectedCount=0;
@@ -341,13 +381,18 @@ void MainWindow::run(const JobSpec& spec,std::function<Cam::Result(std::atomic_b
             });
         } catch(const std::exception& e){error=errorText(e);}
         QMetaObject::invokeMethod(this,[this,spec,result,error]{
+            if(indexFaulted) {
+                worker=nullptr; progress->hide(); cancelButton->hide();
+                if(closing) close();
+                return;
+            }
             worker=nullptr; progress->setRange(0,100); progress->setValue(error.isEmpty()&&!result.canceled?100:0); loadSources(current.id); refresh();
             report(spec.title,result,error);
             if(closing) {close(); return;}
             if(spec.thumbsAfter && error.isEmpty() && !result.canceled) QTimer::singleShot(150,this,&MainWindow::createThumbnails);
         },Qt::QueuedConnection);
     });
-    connect(worker,&QThread::finished,worker,&QObject::deleteLater); worker->start();
+    connect(worker.data(),&QThread::finished,worker.data(),&QObject::deleteLater); worker->start();
 }
 void MainWindow::report(const QString& title,const Cam::Result& r,const QString& error) {
     QFile log(Cam::dataDirectory()+"/operations.log");
@@ -419,9 +464,10 @@ void MainWindow::createThumbnails() {
             try {
                 const QString input=Cam::verifiedPath(source,job.clip), temporary=Cam::thumbnailPath(source,job.clip,job.offsetMs)+".tmp.jpg"; QString log;
                 auto grab=[&](int offset){
+                    QFile::remove(temporary);
                     QStringList args{"-hide_banner","-y"}; if(offset>0) args << "-ss" << QString::number(offset/1000.0,'f',3);
                     args << "-i" << input << "-frames:v" << "1" << "-vf" << "scale=240:-2" << temporary; log.clear();
-                    return Cam::runFfmpeg(executable,args,cancel,&log,20);
+                    return Cam::runFfmpeg(executable,args,cancel,&log,20) && QFileInfo(temporary).size()>0;
                 };
                 bool ok=grab(job.offsetMs);
                 if(!ok && job.offsetMs>0 && !cancel) { QFile::remove(temporary); ok=grab(0); }

@@ -84,7 +84,10 @@ PreviewTarget previewTarget(const QList<Clip>& clips, const QString& trigger) {
     for (const auto& clip : clips) if (covers(clip, nullptr) && prefer(clip, best.clip)) best.clip = clip;
     if (best.clip.relative.isEmpty()) for (const auto& clip : clips) if (prefer(clip, best.clip)) best.clip = clip;
     int offset = 0;
-    if (!best.clip.relative.isEmpty() && covers(best.clip, &offset)) best.offsetMs = offset;
+    if (!best.clip.relative.isEmpty()) {
+        if(covers(best.clip,&offset)) best.offsetMs=offset;
+        else best.offsetMs=int(best.clip.duration>0?qMin<qint64>(1000,best.clip.duration/2):1000);
+    }
     return best;
 }
 bool isWithin(const QString& root, const QString& path) {
@@ -164,8 +167,12 @@ Database::Database(const QString& path) {
     sql = QSqlDatabase::addDatabase("QSQLITE", connection);
     sql.setDatabaseName(path);
     sql.setConnectOptions("QSQLITE_BUSY_TIMEOUT=10000");
+    try {
     if (!sql.open()) fail(QCoreApplication::translate("Cam","无法打开索引：%1").arg(sql.lastError().text()));
-    exec("PRAGMA journal_mode=WAL");
+    // Qt 6.8.3 bundles SQLite 3.49.1, affected by the WAL-reset corruption bug.
+    // Use rollback journals for this local cache; see https://sqlite.org/wal.html .
+    exec("PRAGMA journal_mode=DELETE");
+    exec("PRAGMA synchronous=FULL");
     exec("PRAGMA foreign_keys=ON");
     exec("CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY,root TEXT,name TEXT,last_scan TEXT,status TEXT)");
     exec("CREATE TABLE IF NOT EXISTS clips(source TEXT,rel TEXT,event TEXT,kind TEXT,stamp TEXT,camera TEXT,bytes INTEGER,modified INTEGER,seen TEXT,duration INTEGER,PRIMARY KEY(source,rel))");
@@ -178,6 +185,9 @@ Database::Database(const QString& path) {
     if (!columns.exec("PRAGMA table_info(clips)")) fail(columns.lastError().text());
     while (columns.next()) if (columns.value(1).toString() == "duration") hasDuration = true;
     if (!hasDuration) exec("ALTER TABLE clips ADD COLUMN duration INTEGER");
+    } catch(...) {
+        sql.close(); sql=QSqlDatabase(); QSqlDatabase::removeDatabase(connection); throw;
+    }
 }
 Database::~Database() { sql.close(); sql = QSqlDatabase(); QSqlDatabase::removeDatabase(connection); }
 void Database::exec(const QString& text) { QSqlQuery q(sql); if (!q.exec(text)) fail(q.lastError().text()); }
@@ -191,6 +201,7 @@ QSqlQuery Database::query(const QString& text, const QVariantList& args) {
 QList<Source> Database::sources() {
     auto q = query("SELECT id,root,name,last_scan,status FROM sources ORDER BY name"); QList<Source> result;
     while (q.next()) result.append({q.value(0).toString(), q.value(1).toString(), q.value(2).toString(), q.value(3).toString(), q.value(4).toString()});
+    if(q.lastError().isValid()) fail(q.lastError().text());
     return result;
 }
 void Database::saveSource(const Source& s) {
@@ -224,12 +235,14 @@ QList<Event> Database::events(const QString& id, const QString& kind, const QStr
         e.bytes=q.value(4).toLongLong(); e.files=q.value(5).toInt(); e.cameras=q.value(6).toInt(); e.favorite=q.value(7).toBool(); e.exported=q.value(8).toBool();
         e.trigger=q.value(9).toString(); e.reason=q.value(10).toString(); e.city=q.value(11).toString(); result << e;
     }
+    if(q.lastError().isValid()) fail(q.lastError().text());
     return result;
 }
 QList<Clip> Database::clips(const QString& id, const QString& event) {
     auto q = query("SELECT rel,event,kind,camera,stamp,bytes,modified,COALESCE(duration,0) FROM clips WHERE source=? AND event=? ORDER BY stamp,camera", {id,event});
     QList<Clip> result;
     while(q.next()) result.append({q.value(0).toString(),q.value(1).toString(),q.value(2).toString(),q.value(3).toString(),q.value(4).toString(),q.value(5).toLongLong(),q.value(6).toLongLong(),q.value(7).toLongLong()});
+    if(q.lastError().isValid()) fail(q.lastError().text());
     return result;
 }
 void Database::setFavorite(const QString& id, const QString& event, bool value) {
@@ -238,6 +251,112 @@ void Database::setFavorite(const QString& id, const QString& event, bool value) 
 void Database::setClipDuration(const QString& id, const QString& relative, qint64 duration) {
     if (duration <= 0) return;
     query("UPDATE clips SET duration=? WHERE source=? AND rel=?", {duration, id, relative});
+}
+IndexRecovery recoverIndex(const QString& path) {
+    IndexRecovery result;
+    if(!QFileInfo::exists(path)) return result;
+    // Inspect a private snapshot so SQLite cannot retain a WAL/file handle on the
+    // live path while it is being archived and replaced on Windows.
+    QTemporaryDir inspection;
+    if(!inspection.isValid()) fail(QCoreApplication::translate("Cam","无法创建索引检查目录"));
+    const QString checkPath=inspection.filePath("index.sqlite");
+    for(const QString& suffix:QStringList{"","-wal"}) {
+        const QString original=path+suffix;
+        if(!QFileInfo::exists(original)) continue;
+        const QFileInfo before(original);
+        const qint64 bytes=before.size(),modified=before.lastModified().toMSecsSinceEpoch();
+        if(!QFile::copy(original,checkPath+suffix)) fail(QCoreApplication::translate("Cam","无法读取索引快照，请关闭其他实例后重试"));
+        const QFileInfo after(original);
+        if(after.size()!=bytes || after.lastModified().toMSecsSinceEpoch()!=modified)
+            fail(QCoreApplication::translate("Cam","索引正在被其他进程修改，请稍后重试"));
+    }
+    const QString connection="index-check-"+QUuid::createUuid().toString(QUuid::Id128);
+    auto check=QSqlDatabase::addDatabase("QSQLITE",connection);
+    check.setDatabaseName(checkPath);
+    check.setConnectOptions("QSQLITE_OPEN_READONLY;QSQLITE_BUSY_TIMEOUT=5000");
+    QList<Source> sources;
+    struct Flag {QString source,event; bool favorite;};
+    QList<Flag> flags;
+    QString diagnostic;
+    bool corrupted=false, flagsComplete=true;
+    auto corruption=[](const QSqlError& error) {
+        const int code=error.nativeErrorCode().toInt() & 0xff;
+        return code==11 || code==26;
+    };
+    try {
+        if(!check.open()) {
+            if(!corruption(check.lastError())) fail(check.lastError().text());
+            corrupted=true; diagnostic=check.lastError().text();
+        } else {
+            QSqlQuery q(check);
+            if(!q.exec("PRAGMA quick_check")) {
+                if(!corruption(q.lastError())) fail(q.lastError().text());
+                corrupted=true; diagnostic=q.lastError().text();
+            } else {
+                while(q.next()) if(q.value(0).toString()!="ok") {
+                    corrupted=true;
+                    if(diagnostic.size()<4096) diagnostic+=q.value(0).toString().left(4096)+"\n";
+                }
+                if(q.lastError().isValid()) {
+                    if(!corruption(q.lastError())) fail(q.lastError().text());
+                    corrupted=true; diagnostic+=q.lastError().text();
+                }
+            }
+            if(corrupted) {
+                // Table scans can salvage preferences even when a secondary index is damaged.
+                QSqlQuery s(check);
+                if(s.exec("SELECT id,root,name FROM sources NOT INDEXED"))
+                    while(s.next()) {
+                        Source source{s.value(0).toString(),s.value(1).toString(),s.value(2).toString(),{},
+                                      QCoreApplication::translate("Cam","索引已恢复，请重新扫描")};
+                        if(!source.id.isEmpty() && !source.root.isEmpty()) sources << source;
+                    }
+                QSqlQuery f(check);
+                if(f.exec("SELECT source,event,favorite FROM flags NOT INDEXED")) {
+                    while(f.next()) if(f.value(2).toBool()) flags.append({f.value(0).toString(),f.value(1).toString(),true});
+                    flagsComplete=!f.lastError().isValid();
+                } else flagsComplete=false;
+            }
+        }
+    } catch(...) {
+        check.close(); check=QSqlDatabase(); QSqlDatabase::removeDatabase(connection); throw;
+    }
+    check.close(); check=QSqlDatabase(); QSqlDatabase::removeDatabase(connection);
+    if(!corrupted) return result;
+    const QString identifier=QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss")+"-"+QUuid::createUuid().toString(QUuid::Id128).left(8);
+    const QString backup=QFileInfo(path).absolutePath()+"/recovery/"+identifier;
+    if(!QDir().mkpath(backup)) fail(QCoreApplication::translate("Cam","无法备份损坏索引：%1").arg(backup));
+    const QString replacement=backup+"/rebuilt.sqlite";
+    {
+        Database fresh(replacement);
+        if(!fresh.sql.transaction()) fail(fresh.sql.lastError().text());
+        for(const auto& source:sources) fresh.saveSource(source);
+        for(const auto& flag:flags) fresh.setFavorite(flag.source,flag.event,flag.favorite);
+        if(!fresh.sql.commit()) fail(fresh.sql.lastError().text());
+        auto q=fresh.query("PRAGMA quick_check");
+        if(!q.next() || q.value(0).toString()!="ok") fail(QCoreApplication::translate("Cam","新索引校验失败"));
+    }
+    QStringList moved;
+    auto restore=[&] {
+        for(auto it=moved.crbegin();it!=moved.crend();++it)
+            QFile::rename(QDir(backup).filePath(QFileInfo(path+*it).fileName()),path+*it);
+    };
+    for(const QString& suffix:QStringList{"","-wal","-shm"}) {
+        const QString original=path+suffix;
+        if(!QFileInfo::exists(original)) continue;
+        if(!QFile::rename(original,QDir(backup).filePath(QFileInfo(original).fileName()))) {
+            restore(); fail(QCoreApplication::translate("Cam","索引正在使用或无法备份，请关闭其他应用后重试"));
+        }
+        moved << suffix;
+    }
+    QFile rebuilt(replacement);
+    if(!rebuilt.rename(path)) {const QString error=rebuilt.errorString(); restore(); fail(QCoreApplication::translate("Cam","无法替换损坏索引，原文件已保留：%1").arg(error));}
+    QFile note(backup+"/recovery.json");
+    if(note.open(QIODevice::WriteOnly)) note.write(QJsonDocument(QJsonObject{
+        {"diagnostic",diagnostic.left(8192)},{"restored_sources",int(sources.size())},
+        {"restored_favorites",int(flags.size())},{"favorites_complete",flagsComplete}}).toJson());
+    result.backupDirectory=backup; result.sources=int(sources.size()); result.favorites=int(flags.size());
+    return result;
 }
 static void storeEventMeta(Database& db, const QString& sourceId, const QString& event, const QString& videoPath) {
     const QFileInfo info(QDir(QFileInfo(videoPath).absolutePath()).filePath("event.json"));
@@ -306,16 +425,33 @@ Result scan(const QString& dbPath, const Source& source, bool rebuild, std::atom
         {
             auto q=db.query("SELECT rel,bytes,modified FROM clips WHERE source=?",{source.id});
             while(q.next()) known.insert(q.value(0).toString(),{q.value(1).toLongLong(),q.value(2).toLongLong()});
+            if(q.lastError().isValid()) fail(q.lastError().text());
         }
         bool transaction=false; QSet<QString> metaEvents;
         try {
             for(int i=0;i<paths.size() && !cancel;++i) {
                 if(!transaction) { if(!db.sql.transaction()) fail(db.sql.lastError().text()); transaction=true; }
-                QFileInfo info(paths[i]);
-                if(!info.exists() || !info.isFile()) fail(QCoreApplication::translate("Cam","扫描时文件消失，请重新扫描：%1").arg(paths[i]));
-                const Clip c=describe(source.root,info);
-                // Device identity is checked when a batch commits. Each file still has to stay inside the root.
-                verifiedPath(source,c,true,false);
+                QFileInfo info(paths[i]); Clip c; QString fileError;
+                // Keep old rows for entries which still exist in the directory but cannot be read.
+                try {
+                    if(!info.exists() || !info.isFile()) fail(QCoreApplication::translate("Cam","无法读取文件信息：%1").arg(paths[i]));
+                    c=describe(source.root,info);
+                    verifiedPath(source,c,true,false);
+                    if(c.size<=0) fail(QCoreApplication::translate("Cam","录像文件为空"));
+                    if(!info.isReadable()) fail(QCoreApplication::translate("Cam","录像文件不可读取"));
+                } catch(const std::exception& e) {fileError=QString::fromUtf8(e.what());}
+                if(!fileError.isEmpty()) {
+                    const QString relative=QDir(source.root).relativeFilePath(paths[i]);
+                    db.query("UPDATE clips SET seen=? WHERE source=? AND rel=?",{generation,source.id,relative});
+                    ++result.skipped;
+                    result.errors << QCoreApplication::translate("Cam","跳过无法读取的录像：%1 · %2").arg(relative,fileError);
+                    if((i+1)%100==0 || i==paths.size()-1) {
+                        if(identifySource(source.root).id!=source.id) fail(QCoreApplication::translate("Cam","设备已断开或被更换。"));
+                        if(!db.sql.commit()) fail(db.sql.lastError().text()); transaction=false;
+                        if(progress) progress(i+1,int(paths.size()),QCoreApplication::translate("Cam","建立索引 · %1").arg(relative));
+                    }
+                    continue;
+                }
                 if(!metaEvents.contains(c.event)) { metaEvents.insert(c.event); storeEventMeta(db,source.id,c.event,paths[i]); }
                 const auto previous=known.constFind(c.relative);
                 const bool changed=previous==known.cend() || previous->first!=c.size || previous->second!=c.modified;
@@ -330,10 +466,10 @@ Result scan(const QString& dbPath, const Source& source, bool rebuild, std::atom
                     }
                 }
                 ++result.files; result.bytes+=c.size;
-                if(result.files%100==0 || i==paths.size()-1) {
+                if((i+1)%100==0 || i==paths.size()-1) {
                     if(identifySource(source.root).id!=source.id) fail(QCoreApplication::translate("Cam","设备已断开或被更换。"));
                     if(!db.sql.commit()) fail(db.sql.lastError().text()); transaction=false;
-                    if(progress) progress(result.files,int(paths.size()),QCoreApplication::translate("Cam","建立索引 · %1").arg(c.relative));
+                    if(progress) progress(i+1,int(paths.size()),QCoreApplication::translate("Cam","建立索引 · %1").arg(c.relative));
                 }
             }
             if(transaction) {
@@ -346,7 +482,8 @@ Result scan(const QString& dbPath, const Source& source, bool rebuild, std::atom
             if(identifySource(source.root).id!=source.id) fail(QCoreApplication::translate("Cam","设备已断开或被更换。"));
             auto q=db.query("DELETE FROM clips WHERE source=? AND seen<>?",{source.id,generation}); result.removed=int(q.numRowsAffected());
             db.query("DELETE FROM event_meta WHERE source=? AND event NOT IN (SELECT DISTINCT event FROM clips WHERE source=?)",{source.id,source.id});
-            current.lastScan=QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss"); current.status=QCoreApplication::translate("Cam","索引已完成");
+            current.lastScan=QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+            current.status=result.skipped?QCoreApplication::translate("Cam","索引已完成 · %1 个文件无法读取").arg(result.skipped):QCoreApplication::translate("Cam","索引已完成");
         } else current.status=QCoreApplication::translate("Cam","扫描已中断 · 可继续更新");
         db.saveSource(current);
     } catch(...) { current.status=QCoreApplication::translate("Cam","扫描失败 · 保留已有索引"); db.saveSource(current); throw; }

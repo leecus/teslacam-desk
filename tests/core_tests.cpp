@@ -8,6 +8,83 @@ class CoreTests:public QObject {
         QVERIFY(QDir().mkpath(QFileInfo(path).absolutePath())); QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(content),content.size());
     }
 private slots:
+    void localIndexesUseDurableRollbackJournals() {
+        QTemporaryDir temp; const QString path=temp.path()+"/index.sqlite";
+        Cam::Database db(path);
+        auto mode=db.query("PRAGMA journal_mode"); QVERIFY(mode.next()); QCOMPARE(mode.value(0).toString(),QString("delete"));
+        auto sync=db.query("PRAGMA synchronous"); QVERIFY(sync.next()); QCOMPARE(sync.value(0).toInt(),2);
+    }
+    void ordinaryPreviewsAvoidUninitializedFirstFrames() {
+        Cam::Clip clip{"front.mp4","event","recent","front","2026-11-12 14:00:00",100,100,0};
+        QCOMPARE(Cam::previewTarget({clip},{}).offsetMs,1000);
+        clip.duration=600;
+        const auto shortClip=Cam::previewTarget({clip},{});
+        QVERIFY(shortClip.offsetMs>0 && shortClip.offsetMs<clip.duration);
+    }
+    void damagedIndexIsPreservedAndPreferencesRecovered() {
+        QTemporaryDir temp; const QString path=temp.path()+"/index.sqlite";
+        int indexPage=0,pageSize=0;
+        {
+            Cam::Database db(path);
+            db.saveSource({"device","E:/TeslaCam","USB","2026-11-12 10:00:00","ready"});
+            db.setFavorite("device","SavedClips/important",true);
+            auto page=db.query("SELECT rootpage FROM sqlite_master WHERE name='clips_time'"); QVERIFY(page.next()); indexPage=page.value(0).toInt();
+            auto size=db.query("PRAGMA page_size"); QVERIFY(size.next()); pageSize=size.value(0).toInt();
+        }
+        QVERIFY(indexPage>0 && pageSize>0);
+        QFile file(path); QVERIFY(file.open(QIODevice::ReadWrite)); QVERIFY(file.seek(qint64(indexPage-1)*pageSize));
+        QCOMPARE(file.write(QByteArray(pageSize,'\0')),pageSize); file.close();
+        QVERIFY(file.open(QIODevice::ReadOnly)); const auto damaged=file.readAll(); file.close();
+        const auto recovered=Cam::recoverIndex(path);
+        QVERIFY(!recovered.backupDirectory.isEmpty()); QCOMPARE(recovered.sources,1); QCOMPARE(recovered.favorites,1);
+        QFile original(recovered.backupDirectory+"/index.sqlite"); QVERIFY(original.open(QIODevice::ReadOnly)); QCOMPARE(original.readAll(),damaged);
+        Cam::Database db(path); QCOMPARE(db.sources().size(),1); QVERIFY(db.sources().first().lastScan.isEmpty());
+        auto flags=db.query("SELECT favorite,exported FROM flags WHERE source='device' AND event='SavedClips/important'");
+        QVERIFY(flags.next()); QVERIFY(flags.value(0).toBool()); QVERIFY(!flags.value(1).toBool());
+        auto check=db.query("PRAGMA quick_check"); QVERIFY(check.next()); QCOMPARE(check.value(0).toString(),QString("ok"));
+    }
+    void malformedDatabaseDoesNotLeakConnections() {
+        QTemporaryDir temp; const QString path=temp.path()+"/index.sqlite";
+        write(path,"this is not a SQLite database; keep this data for recovery");
+        const auto connections=QSqlDatabase::connectionNames();
+        QVERIFY_THROWS_EXCEPTION(std::runtime_error,static_cast<void>(Cam::Database(path)));
+        QCOMPARE(QSqlDatabase::connectionNames(),connections);
+        const auto recovered=Cam::recoverIndex(path); QVERIFY(!recovered.backupDirectory.isEmpty());
+        Cam::Database db(path); QCOMPARE(db.sources().size(),0);
+    }
+    void recoveryIncludesUncheckpointedWalPreferences() {
+        QTemporaryDir temp; const QString live=temp.path()+"/live.sqlite",path=temp.path()+"/damaged.sqlite";
+        int indexPage=0,pageSize=0;
+        {
+            Cam::Database db(live); db.exec("PRAGMA journal_mode=WAL"); db.exec("PRAGMA wal_autocheckpoint=0"); db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+            db.saveSource({"wal-device","F:/TeslaCam","USB",{},"ready"});
+            db.setFavorite("wal-device","SavedClips/important",true);
+            auto page=db.query("SELECT rootpage FROM sqlite_master WHERE name='clips_time'"); QVERIFY(page.next()); indexPage=page.value(0).toInt();
+            auto size=db.query("PRAGMA page_size"); QVERIFY(size.next()); pageSize=size.value(0).toInt();
+            QVERIFY(QFile::copy(live,path)); QVERIFY(QFile::copy(live+"-wal",path+"-wal"));
+        }
+        QFile file(path); QVERIFY(file.open(QIODevice::ReadWrite)); QVERIFY(file.seek(qint64(indexPage-1)*pageSize));
+        QCOMPARE(file.write(QByteArray(pageSize,'\0')),pageSize); file.close();
+        QFile wal(path+"-wal"); QVERIFY(wal.open(QIODevice::ReadOnly)); const auto journal=wal.readAll(); wal.close(); QVERIFY(!journal.isEmpty());
+        const auto recovered=Cam::recoverIndex(path); QVERIFY(!recovered.backupDirectory.isEmpty());
+        QCOMPARE(recovered.sources,1); QCOMPARE(recovered.favorites,1);
+        QFile preserved(recovered.backupDirectory+"/damaged.sqlite-wal"); QVERIFY(preserved.open(QIODevice::ReadOnly)); QCOMPARE(preserved.readAll(),journal);
+        Cam::Database db(path); QCOMPARE(db.sources().first().id,QString("wal-device"));
+    }
+    void scanSkipsBadFilesWithoutDroppingExistingRows() {
+        QTemporaryDir temp; const QString root=temp.path()+"/TeslaCam",path=temp.path()+"/index.sqlite";
+        const QString front=root+"/SavedClips/event/2026-11-12_14-00-00-front.mp4";
+        write(front); write(root+"/SavedClips/event/2026-11-12_14-00-00-back.mp4");
+        write(root+"/SavedClips/event/2026-11-12_14-00-00-broken.mp4",{});
+        const auto source=Cam::identifySource(root); std::atomic_bool cancel=false;
+        auto result=Cam::scan(path,source,false,cancel); QCOMPARE(result.files,2); QCOMPARE(result.skipped,1); QCOMPARE(result.errors.size(),1);
+        write(front,{});
+        result=Cam::scan(path,source,false,cancel); QCOMPARE(result.files,1); QCOMPARE(result.skipped,2); QCOMPARE(result.removed,0);
+        Cam::Database db(path); QCOMPARE(db.clips(source.id,"SavedClips/event").size(),2);
+        write(front,"readable again");
+        result=Cam::scan(path,source,false,cancel); QCOMPARE(result.files,2); QCOMPARE(result.skipped,1);
+        QVERIFY(!db.sources().first().lastScan.isEmpty());
+    }
     void indexGroupingAndWholeEventFilters() {
         QTemporaryDir temp; QVERIFY(temp.isValid());
         const auto root=temp.path()+"/中文 U盘/TeslaCam";

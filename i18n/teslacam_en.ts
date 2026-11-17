@@ -297,6 +297,62 @@
         <source>鸣笛</source>
         <translation>Horn pressed</translation>
     </message>
+    <message>
+        <source>索引已恢复，请重新扫描</source>
+        <translation>Index recovered; scan again</translation>
+    </message>
+    <message>
+        <source>无法备份损坏索引：%1</source>
+        <translation>Cannot back up the damaged index: %1</translation>
+    </message>
+    <message>
+        <source>新索引校验失败</source>
+        <translation>The replacement index failed verification</translation>
+    </message>
+    <message>
+        <source>索引正在使用或无法备份，请关闭其他应用后重试</source>
+        <translation>The index is in use or cannot be backed up. Close other instances and try again.</translation>
+    </message>
+    <message>
+        <source>无法替换损坏索引，原文件已保留</source>
+        <translation>Cannot replace the damaged index. The original files have been retained.</translation>
+    </message>
+    <message>
+        <source>无法读取文件信息：%1</source>
+        <translation>Cannot read file information: %1</translation>
+    </message>
+    <message>
+        <source>录像文件为空</source>
+        <translation>The recording is empty</translation>
+    </message>
+    <message>
+        <source>跳过无法读取的录像：%1 · %2</source>
+        <translation>Skipped unreadable recording: %1 · %2</translation>
+    </message>
+    <message>
+        <source>索引已完成 · %1 个文件无法读取</source>
+        <translation>Index complete; %1 files could not be read</translation>
+    </message>
+    <message>
+        <source>无法创建索引检查目录</source>
+        <translation>Cannot create the index inspection folder</translation>
+    </message>
+    <message>
+        <source>无法读取索引快照，请关闭其他实例后重试</source>
+        <translation>Cannot read the index snapshot. Close other instances and try again.</translation>
+    </message>
+    <message>
+        <source>索引正在被其他进程修改，请稍后重试</source>
+        <translation>Another process is modifying the index. Try again later.</translation>
+    </message>
+    <message>
+        <source>无法替换损坏索引，原文件已保留：%1</source>
+        <translation>Cannot replace the damaged index. The original files have been retained: %1</translation>
+    </message>
+    <message>
+        <source>录像文件不可读取</source>
+        <translation>The recording is not readable</translation>
+    </message>
 </context>
 <context>
     <name>EventPlayer</name>
@@ -1057,6 +1113,18 @@ When unchecked, json, jpg and png files in the event folder are kept. RecentClip
         <source>高亮日期有录像，点击日期筛选</source>
         <translation>Highlighted dates have recordings; click a date to filter</translation>
     </message>
+    <message>
+        <source>索引已恢复，请扫描重建</source>
+        <translation>Index recovered; scan to rebuild</translation>
+    </message>
+    <message>
+        <source>损坏索引已备份到：%1</source>
+        <translation>Damaged index backed up to: %1</translation>
+    </message>
+    <message>
+        <source>操作失败，请重新打开应用</source>
+        <translation>Operation failed; reopen the app</translation>
+    </message>
 </context>
 <context>
     <name>main</name>
@@ -1087,6 +1155,22 @@ When unchecked, json, jpg and png files in the event folder are kept. RecentClip
     <message>
         <source>选择初始录像目录（不会自动扫描）</source>
         <translation>Initial recording folder (does not scan automatically)</translation>
+    </message>
+    <message>
+        <source>未知的界面错误</source>
+        <translation>Unknown interface error</translation>
+    </message>
+    <message>
+        <source>操作失败</source>
+        <translation>Operation failed</translation>
+    </message>
+    <message>
+        <source>应用已在运行</source>
+        <translation>The app is already running</translation>
+    </message>
+    <message>
+        <source>请使用已打开的窗口，或先关闭其他实例。</source>
+        <translation>Use the open window or close the other instance first.</translation>
     </message>
 </context>
 </TS>

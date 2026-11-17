@@ -3,6 +3,7 @@ build/
 bin/
 dist/
 .verification/
+.workbuddy/
 __pycache__/
 *.pyc
 *.log

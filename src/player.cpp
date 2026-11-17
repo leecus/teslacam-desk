@@ -75,6 +75,7 @@ EventPlayer::EventPlayer(QWidget* parent):QWidget(parent) {
     clear();
 }
 void EventPlayer::clear() {
+    ++generation;
     pause(); clips.clear(); durations.clear();
     for(auto lane:lanes) { lane->player->stop(); delete lane->player; delete lane; }
     lanes.clear();
@@ -93,24 +94,29 @@ void EventPlayer::load(const Cam::Source& src,const QList<Cam::Clip>& values,con
     for(const auto& c:clips) { if(!cameras.contains(c.camera)) cameras << c.camera; length=qMax(length,clipOffset(c)+durations.value(c.relative,60000)); }
     for(const auto& camera:cameras) {
         auto lane=new Lane; lane->camera=camera;
-        auto box=new QWidget; box->setObjectName("cameraBox"); auto l=new QVBoxLayout(box); l->setContentsMargins(6,6,6,6); l->setSpacing(3);
+        auto box=new QWidget; box->setObjectName("cameraBox"); box->setMinimumSize(120,110); box->setSizePolicy(QSizePolicy::Ignored,QSizePolicy::Ignored); auto l=new QVBoxLayout(box); l->setContentsMargins(6,6,6,6); l->setSpacing(3);
         auto caption=new QLabel(Cam::cameraLabel(camera)); caption->setObjectName("cameraTitle"); l->addWidget(caption);
         lane->video=new QVideoWidget; lane->video->installEventFilter(this); lane->video->setMinimumSize(120,65); lane->video->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Expanding); l->addWidget(lane->video,1);
         lane->status=new QLabel(tr("无此视角录像")); lane->status->setObjectName("cameraStatus"); lane->status->setWordWrap(true); l->addWidget(lane->status);
         lane->player=new QMediaPlayer(this); lane->player->setVideoOutput(lane->video);
-        connect(lane->player,&QMediaPlayer::errorOccurred,this,[lane](QMediaPlayer::Error,const QString& message){lane->status->setText(EventPlayer::tr("无法播放")); lane->status->setToolTip(message); lane->status->setAccessibleDescription(message); lane->status->show();});
-        connect(lane->player,&QMediaPlayer::durationChanged,this,[this,lane](qint64 duration){
+        const quint64 epoch=generation;
+        connect(lane->player,&QMediaPlayer::errorOccurred,this,[this,lane,epoch](QMediaPlayer::Error,const QString& message){if(epoch!=generation) return; lane->status->setText(EventPlayer::tr("无法播放")); lane->status->setToolTip(message); lane->status->setAccessibleDescription(message); lane->status->show();});
+        connect(lane->player,&QMediaPlayer::durationChanged,this,[this,lane,epoch](qint64 duration){
+            if(epoch!=generation) return;
             if(duration>0 && !lane->path.isEmpty()) { durations[lane->path]=duration; emit clipDurationKnown(lane->path,duration); updateLength(); if(lane->player->mediaStatus()==QMediaPlayer::LoadedMedia) sync(); }
         });
-        connect(lane->player,&QMediaPlayer::mediaStatusChanged,this,[this,lane](QMediaPlayer::MediaStatus state){
+        connect(lane->player,&QMediaPlayer::mediaStatusChanged,this,[this,lane,epoch](QMediaPlayer::MediaStatus state){
+            if(epoch!=generation) return;
             if(state==QMediaPlayer::LoadedMedia || state==QMediaPlayer::BufferedMedia) sync();
         });
-        grid->addWidget(box,int(lanes.size())/2,int(lanes.size())%2); lanes << lane;
+        const int row=int(lanes.size())/2,column=int(lanes.size())%2;
+        grid->addWidget(box,row,column); grid->setRowStretch(row,1); grid->setColumnStretch(column,1); lanes << lane;
         if(std::any_of(clips.cbegin(),clips.cend(),[&camera](const Cam::Clip& c){return c.camera==camera;})) cameraChoice->addItem(Cam::cameraLabel(camera),camera);
     }
     slider->setRange(0,int(qMin(length,qint64(INT_MAX)))); from->setRange(0,int(length/1000)); to->setRange(0,int(length/1000)); to->setValue(int(length/1000));
 
-    for(auto lane:lanes) connect(lane->video,&QVideoWidget::fullScreenChanged,this,[lane](bool full){if(!full) lane->video->show();});
+    const quint64 epoch=generation;
+    for(auto lane:lanes) connect(lane->video,&QVideoWidget::fullScreenChanged,this,[this,lane,epoch](bool full){if(epoch==generation && !full) lane->video->show();});
     if(!trigger.isEmpty()) {
         auto timestamp=QDateTime::fromString(trigger,Qt::ISODate);
         if(!timestamp.isValid()) timestamp=QDateTime::fromString(trigger,"yyyy-MM-ddTHH-mm-ss");
@@ -163,7 +169,9 @@ void EventPlayer::sync() {
         const Cam::Clip* selected=nullptr;
         for(const auto& c:clips) if(c.camera==lane->camera && clipOffset(c)<=position) selected=&c;
         if(!selected || position>=clipOffset(*selected)+durations.value(selected->relative,60000)) {
-            lane->player->pause(); lane->video->hide(); lane->status->setText(tr("无录像")); lane->status->show(); continue;
+            lane->player->pause();
+            if(!lane->path.isEmpty()) {lane->path.clear(); lane->player->setSource({});}
+            lane->video->show(); lane->status->setText(tr("无录像")); lane->status->show(); continue;
         }
         const auto& c=*selected;
         if(lane->path!=c.relative) {
@@ -171,7 +179,7 @@ void EventPlayer::sync() {
                 const QString path=Cam::verifiedPath(source,c);
                 lane->path=c.relative; lane->status->setText(tr("载入中…")); lane->status->show(); lane->video->setToolTip(tr("%1\n双击全屏，Esc 返回").arg(QFileInfo(c.relative).fileName())); lane->video->setAccessibleName(tr("%1录像").arg(Cam::cameraLabel(c.camera))); lane->video->show();
                 lane->player->setSource(QUrl::fromLocalFile(path));
-            } catch(const std::exception& e) { lane->video->hide(); lane->status->setText(tr("文件不可用")); lane->status->setToolTip(QString::fromUtf8(e.what())); lane->status->setAccessibleDescription(QString::fromUtf8(e.what())); lane->status->show(); continue; }
+            } catch(const std::exception& e) { lane->player->pause(); lane->path.clear(); lane->player->setSource({}); lane->video->show(); lane->status->setText(tr("文件不可用")); lane->status->setToolTip(QString::fromUtf8(e.what())); lane->status->setAccessibleDescription(QString::fromUtf8(e.what())); lane->status->show(); continue; }
         }
         if(lane->player->error()!=QMediaPlayer::NoError) continue;
         lane->video->show(); lane->status->hide();

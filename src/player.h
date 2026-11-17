@@ -46,6 +46,7 @@ private:
     QElapsedTimer elapsed;
     qint64 position=0, anchor=0, length=0;
     bool playing=false;
+    quint64 generation=0;
     void seek(qint64 value);
     void sync();
     qint64 clipOffset(const Cam::Clip& clip) const;

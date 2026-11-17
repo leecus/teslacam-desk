@@ -22,11 +22,18 @@ struct PreviewTarget {
 };
 struct Result {
     bool canceled = false;
-    int files = 0, changed = 0, removed = 0, events = 0;
+    int files = 0, changed = 0, removed = 0, events = 0, skipped = 0;
     qint64 bytes = 0;
     QString destination;
     QStringList errors;
 };
+struct IndexRecovery {
+    QString backupDirectory;
+    int sources = 0, favorites = 0;
+};
+// Run before opening the application's database connections. Damaged indexes are
+// preserved, then replaced atomically; recordings are never part of this operation.
+IndexRecovery recoverIndex(const QString& path);
 using Progress = std::function<void(int, int, const QString&)>;
 QString dataDirectory();
 QString settingsFile();

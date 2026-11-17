@@ -6,9 +6,12 @@ Windows supported. macOS and Linux planned.
 
 ## 下载
 
-[下载 v0.1.0 Windows x64 ZIP](https://github.com/leecus/teslacam-desk/releases/download/v0.1.0/TeslaCamDesk-v0.1.0-windows-x64.zip) · [版本说明](https://github.com/leecus/teslacam-desk/releases/tag/v0.1.0)
+[下载 v0.2.1 安装包 (setup.exe)](https://github.com/leecus/teslacam-desk/releases/download/v0.2.1/TeslaCamDesk-v0.2.1-setup.exe) · [下载 v0.2.1 绿色 ZIP](https://github.com/leecus/teslacam-desk/releases/download/v0.2.1/TeslaCamDesk-v0.2.1-windows-x64.zip) · [版本说明](https://github.com/leecus/teslacam-desk/releases/tag/v0.2.1)
 
-下载 Release 中的 `TeslaCamDesk-v0.1.0-windows-x64.zip`，完整解压后运行 `TeslaCamManager.exe`。运行库和 FFmpeg 已包含在包内。
+- **安装包（推荐）**：双击 `TeslaCamDesk-v0.2.1-setup.exe`，按向导安装到当前用户目录（`%LOCALAPPDATA%\TeslaCamDesk`），**无需管理员权限**，自动创建开始菜单快捷方式，可在“设置 → 应用”中卸载。卸载只删除程序文件，索引、缩略图和日志会保留。
+- **绿色 ZIP**：完整解压后运行 `TeslaCamManager.exe`，运行库和 FFmpeg 已包含在内，不需要安装。
+
+v0.2.0 起 FFmpeg 命令行为精简构建，安装包约 22 MB、ZIP 约 30 MB（旧版约 65 MB）。
 
 ## 截图
 
@@ -32,6 +35,12 @@ Windows supported. macOS and Linux planned.
 8. 展开“裁剪导出”并点击“导出片段”，按事件时间轴上的秒数裁剪所选单摄像头，输出 1280×720 H.264 MP4（保持比例、必要时加黑边、无音频）。处理前读取实际片段时长，缺片或覆盖不足会拒绝导出，最终核对输出时长。这是观看版，不替代原始录像。
 9. 收藏事件受本工具删除保护。清理以事件为单位，删除前列出数量和预估释放空间，需明确确认永久删除；不经过回收站。删除前核对磁盘身份、文件大小及修改时间。文件变化时跳过整条事件并提示更新索引。只删除索引内的录像，不递归删除目录，事件元数据保留。
 10. “备份后删除”要求备份目标在另一磁盘，所有所选事件的原片与信息完整备份并校验成功后才开始删除。取消或备份失败不开始删除；删除阶段取消会保留尚未处理的文件。文件系统操作不具备整批撤销能力，断盘或删除权限失败时可能部分完成，结果会记录已完成数量。
+
+## 故障恢复
+
+索引启动时会进行完整性检查。损坏时先保留原数据库及日志文件到索引目录下的 `recovery/`，尽量保留设备与收藏信息，再重建可扫描的空索引。扫描会跳过并记录无法读取或为空的录像；已缓存但暂时不可读的记录不会被当作已删除。
+
+本地索引使用回滚日志及完整同步，避免 Qt 6.8.3 所带 SQLite 3.49.1 的已知 WAL-reset 缺陷；视频时长缓存在后台任务空闲后批量写入。Windows 报告的文件系统损坏（例如错误 1392）仍需另行处理，跳过文件不会修复 U 盘本身。
 
 ## 分组与索引
 
@@ -58,7 +67,7 @@ setup-dev 仅在项目 .deps 中准备 Python 虚拟环境和 Qt SDK。build.ps1
 
 测试覆盖事件分组、完整事件时间筛选、增量与完整扫描、中断恢复、原片校验与元数据备份、导出状态失效、收藏保护、变化文件拒删、设备不匹配、路径越界、跨片段精确裁剪、缺片拒绝和取消处理。视频测试使用生成画面，不使用真实行车记录。
 
-开发运行参数：`--source "E:\TeslaCam"` 只选择目录，不自动扫描；`--smoke-test` 启动窗口后自动退出；`--theme light|dark` 指定外观；`--lang zh|en` 指定界面语言；`--screenshot out.png` 渲染窗口后退出；`--scan` 配合 `--source` 在无界面下建索引并输出 `{"files","events","bytes","changed","ms"}`，用于批量与性能验证。
+开发运行参数：`--source "E:\TeslaCam"` 只选择目录，不自动扫描；`--smoke-test` 启动窗口后自动退出；`--theme light|dark` 指定外观；`--lang zh|en` 指定界面语言；`--screenshot out.png` 渲染窗口后退出；`--scan` 配合 `--source` 在无界面下建索引并输出 `{"files","events","bytes","changed","skipped","ms"}`，用于批量与性能验证。
 
 标题栏右侧的 ☀/☾ 切换浅色与深色外观，“更多 → 语言”切换中文与英文；两项选择都保存在本地设置中，未设置时跟随系统配色与语言。浅色以中性灰为主，深色为暗色面板，两者共用同一套青色强调色。
 
@@ -77,8 +86,13 @@ setup-dev 仅在项目 .deps 中准备 Python 虚拟环境和 Qt SDK。build.ps1
 
 ## 发布包
 
-用户明确要求发布时，使用 `python package-release.py --version 0.1.0` 生成版本化的 Windows x64 ZIP。准备材料位于 `.deps/release-sources/`：Qt 6.8.3 三个模块的源码归档、FFmpeg 7.1 与 9.0.2 源码、Gyan 的原始 essentials ZIP，以及 DirectX Shader Compiler 的许可文件。来源 URL 见脚本。脚本校验 FFmpeg 与上游原包一致，收集动态运行库及许可材料，并生成逐文件清单和 SHA-256 校验文件；同版本的历史包不会被覆盖。
+用户明确要求发布时，分两步生成版本化的 Windows x64 交付物：
 
-使用 `python tests/verify_release.py dist/TeslaCamDesk-v0.1.0-windows-x64.zip` 校验 ZIP、文件清单、x64 DLL 依赖，并在含中文及空格的临时路径、隔离 PATH 的环境中启动应用、创建 SQLite 索引和验证 FFmpeg 编解码。
+1. **绿色 ZIP**：`python package-release.py --version 0.2.1`。准备材料位于 `.deps/release-sources/`（Qt 6.8.3 三个模块的源码归档、FFmpeg 7.1 与 9.0.2 源码、精简构建所用的 `x264-stable-source.tar.gz` 原始源码归档、DirectX Shader Compiler 许可）。脚本收集动态运行库及许可材料，生成逐文件清单和 SHA-256 校验文件；同版本历史包不会被覆盖。
+2. **安装器**：运行 `python package-installer.py --version 0.2.1`，默认使用 `.deps/nsis/nsis-3.11/makensis.exe`；其他位置通过 `--makensis` 指定。安装到当前用户目录，无需管理员权限，含开始菜单快捷方式与卸载程序，卸载时保留用户数据，并根据发布清单逐个移除程序文件，保留安装目录内的其他文件。安装包校验值也写入同一个 SHA256SUMS 文件。
 
-第三方依赖：Qt 动态链接（LGPL-3.0）、SQLite、Qt 多媒体使用的 FFmpeg 7.1 动态库（LGPL-2.1-or-later），以及独立调用的 FFmpeg 9.0.2 命令行程序（GPL-3.0-or-later）。发布包附许可文本、模块 SBOM、构建信息与来源索引；相关源码归档在同一 Release 提供下载。
+FFmpeg 命令行程序从源码精简编译：`tools/ffmpeg-minimal/build.sh` 给出可复现配方（`--disable-everything` 白名单，仅保留 H.264 解码、libx264 编码、mjpeg 缩略图、mov/mp4 + concat 封装及 scale/pad/setsar/fps 滤镜）。`bin/ffmpeg.exe` 从 Gyan 的 101 MB 全功能构建降为约 5.4 MB。所需源码放在 `.deps/ffmpeg-minimal/`（x264、FFmpeg 9.0.2、NASM），许可文本在其 `license-staging/`，由打包脚本写入。构建脚本优先使用该精简 CLI，已有本地 CLI 也不会被 Python 后备版本覆盖；可用 `-FfmpegPath` 显式选择。
+
+使用 `python tests/verify_release.py dist/TeslaCamDesk-v0.2.1-windows-x64.zip` 校验 ZIP、文件清单、x64 DLL 依赖，并在含中文及空格的临时路径、隔离 PATH 的环境中启动应用、创建 SQLite 索引和验证 FFmpeg 编解码（H.264→libx264 编码、截帧解码）。
+
+第三方依赖：Qt 动态链接（LGPL-3.0）、SQLite、Qt 多媒体使用的 FFmpeg 7.1 动态库（LGPL-2.1-or-later），以及独立调用的精简 FFmpeg 9.0.2 命令行程序（GPL-2.0-or-later，静态链接 libx264，同为 GPL-2.0-or-later）。发布包附许可文本、模块 SBOM、构建信息与来源索引；FFmpeg 9.0.2 与 x264 源码可通过 `third-party-sources.json` 中的地址获取。

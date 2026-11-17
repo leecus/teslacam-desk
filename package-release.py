@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import shutil
@@ -10,6 +9,7 @@ import subprocess
 import tarfile
 import zipfile
 from pathlib import Path
+from package_release_support import digest
 
 PROJECT = Path(__file__).resolve().parent
 SOURCES = {
@@ -20,6 +20,7 @@ SOURCES = {
 SOURCES.update({
     'ffmpeg-7.1.tar.xz': 'https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz',
     'ffmpeg-9.0.2.tar.xz': 'https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz',
+    'x264-stable-source.tar.gz': 'https://code.videolan.org/videolan/x264/-/archive/stable/x264-stable.tar.gz',
 })
 PLUGINS = {
     'platforms': ['qwindows.dll'],
@@ -33,11 +34,6 @@ PLUGINS = {
 }
 
 
-def digest(path: Path) -> str:
-    with path.open('rb') as handle:
-        return hashlib.file_digest(handle, 'sha256').hexdigest()
-
-
 def copy(source: Path, destination: Path) -> None:
     if not source.is_file():
         raise FileNotFoundError(source)
@@ -46,7 +42,7 @@ def copy(source: Path, destination: Path) -> None:
 
 
 def collect_licenses(archive: Path, destination: Path) -> None:
-    with tarfile.open(archive, 'r:xz') as tar:
+    with tarfile.open(archive, 'r:*') as tar:
         for item in tar:
             parts = Path(item.name).parts
             if not item.isfile() or len(parts) < 2 or '..' in parts:
@@ -64,9 +60,12 @@ def collect_licenses(archive: Path, destination: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--version', default='0.1.0')
+    parser.add_argument('--version', required=True)
     parser.add_argument('--sources', type=Path, default=PROJECT / '.deps/release-sources')
     parser.add_argument('--runtime', type=Path)
+    parser.add_argument('--ffmpeg-license-dir', type=Path,
+                        default=PROJECT / '.deps/ffmpeg-minimal/license-staging',
+                        help='Directory holding FFMPEG-GPLv2.txt and X264-GPLv2.txt for the self-built minimal FFmpeg CLI.')
     args = parser.parse_args()
     if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?', args.version):
         parser.error('Version must be a safe semantic version.')
@@ -82,9 +81,13 @@ def main() -> None:
         if not (binary / required).is_file():
             raise FileNotFoundError(f'Run build.ps1 first: missing {required}')
     source_root = args.sources.resolve()
-    for filename in [*SOURCES, 'ffmpeg-release-essentials.zip', 'DXC-LICENSE.txt', 'DXC-ThirdPartyNotices.txt']:
+    for filename in [*SOURCES, 'DXC-LICENSE.txt', 'DXC-ThirdPartyNotices.txt']:
         if not (source_root / filename).is_file():
             raise FileNotFoundError(f'Missing third-party release material: {filename}')
+    ffmpeg_licenses = args.ffmpeg_license_dir.resolve()
+    for filename in ['FFMPEG-GPLv2.txt', 'X264-GPLv2.txt']:
+        if not (ffmpeg_licenses / filename).is_file():
+            raise FileNotFoundError(f'Missing self-built FFmpeg license text: {ffmpeg_licenses / filename}')
     runtime = args.runtime
     if runtime is None:
         roots = Path('C:/Program Files/Microsoft Visual Studio/18/Community/VC/Redist/MSVC')
@@ -95,29 +98,26 @@ def main() -> None:
         runtime = sorted(candidates, key=lambda p: p.as_posix())[-1]
     if not (runtime / 'vcruntime140.dll').is_file():
         raise FileNotFoundError('The runtime directory must contain vcruntime140.dll.')
-    # Verify the CLI is the exact upstream binary whose notices we distribute.
-    with zipfile.ZipFile(source_root / 'ffmpeg-release-essentials.zip') as upstream:
-        member = next(n for n in upstream.namelist() if n.endswith('/bin/ffmpeg.exe'))
-        if hashlib.sha256(upstream.read(member)).hexdigest() != digest(binary / 'ffmpeg.exe'):
-            raise RuntimeError('FFmpeg binary differs from the documented upstream distribution.')
-        stage.mkdir(parents=True)
-        for filename in ['TeslaCamManager.exe', 'ffmpeg.exe']:
-            copy(binary / filename, stage / filename)
-        for dll in binary.glob('*.dll'):
-            copy(dll, stage / dll.name)
-        for directory, files in PLUGINS.items():
-            for filename in files:
-                copy(binary / directory / filename, stage / directory / filename)
-        for dll in runtime.glob('*.dll'):
-            copy(dll, stage / dll.name)
-        for filename in upstream.namelist():
-            if filename.endswith('/LICENSE') or filename.endswith('/README.txt'):
-                target = stage / 'licenses/FFmpeg-CLI' / Path(filename).name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(upstream.read(filename))
+    # The CLI is a self-built minimal FFmpeg (GPLv2 + libx264), not the Gyan upstream binary.
+    # Its reproducible build recipe lives in tools/ffmpeg-minimal/build.sh and is documented in the notices.
+    config = subprocess.run([str(binary / 'ffmpeg.exe'), '-version'], capture_output=True, text=True, errors='replace', check=True)
+    if not all(flag in config.stdout for flag in ['ffmpeg version 9.0.2', '--enable-gpl', '--enable-libx264', '--disable-everything', '--disable-network']):
+        raise ValueError('Release requires the minimal FFmpeg CLI from tools/ffmpeg-minimal/build.sh.')
+    stage.mkdir(parents=True)
+    for filename in ['TeslaCamManager.exe', 'ffmpeg.exe']:
+        copy(binary / filename, stage / filename)
+    for dll in binary.glob('*.dll'):
+        copy(dll, stage / dll.name)
+    for directory, files in PLUGINS.items():
+        for filename in files:
+            copy(binary / directory / filename, stage / directory / filename)
+    for dll in runtime.glob('*.dll'):
+        copy(dll, stage / dll.name)
+    for filename in ['FFMPEG-GPLv2.txt', 'X264-GPLv2.txt']:
+        copy(ffmpeg_licenses / filename, stage / 'licenses/FFmpeg-CLI' / filename)
     (stage / 'qt.conf').write_text('[Paths]\nPrefix=.\nPlugins=.\n', encoding='utf-8')
     for filename in SOURCES:
-        collect_licenses(source_root / filename, stage / 'licenses' / filename.removesuffix('.tar.xz'))
+        collect_licenses(source_root / filename, stage / 'licenses' / filename.removesuffix('.tar.xz').removesuffix('.tar.gz'))
     for filename in ['DXC-LICENSE.txt', 'DXC-ThirdPartyNotices.txt']:
         copy(source_root / filename, stage / 'licenses/DirectXShaderCompiler' / filename)
     qt = PROJECT / '.deps/Qt/6.8.3/msvc2022_64'
@@ -126,7 +126,7 @@ def main() -> None:
     readme = f'''TeslaCam Desk {version} — Windows x64 预览版
 
 完整解压此文件夹，双击 TeslaCamManager.exe。请保留同目录的 DLL、插件和许可文件。
-选择 U 盘或 TeslaCam 录像目录，再点击“扫描建索引”。
+选择 U 盘或 TeslaCam 录像目录，再点击“更新索引”。
 界面支持中文与英文，可在“更多 → 语言”切换；默认跟随系统语言。
 扫描、播放、原片备份、裁剪及清理均在本地进行。
 
@@ -138,7 +138,6 @@ Windows 10/11 x64。macOS、Linux 尚未提供发行包。真实车型录像格�
 第三方许可与来源：THIRD-PARTY-NOTICES.txt、licenses/、third-party-sources.json。
 '''
     (stage / 'README.txt').write_text(readme, encoding='utf-8-sig')
-    config = subprocess.run([str(binary / 'ffmpeg.exe'), '-version'], capture_output=True, text=True, errors='replace', check=True)
     notices = '''THIRD-PARTY SOFTWARE
 
 Qt 6.8.3 (qtbase, qtsvg, qtmultimedia): Copyright The Qt Company Ltd. and contributors.
@@ -156,12 +155,17 @@ Build configuration: --prefix=installed --disable-programs --disable-doc --disab
 --enable-network --disable-lzma --enable-pic --disable-vulkan --disable-v4l2-m2m
 --disable-decoder=truemotion1 --toolchain=msvc --enable-shared --disable-static
 
-FFmpeg command-line program: 9.0.2 essentials static build by Gyan Doshi, GPL-3.0-or-later.
-This is a separate executable, invoked as a child process. Its upstream README and GPL text are preserved
-in licenses/FFmpeg-CLI/. Source: https://github.com/FFmpeg/FFmpeg/commit/946fcce07b
-Full upstream distribution/build information: https://www.gyan.dev/ffmpeg/builds/
-Sources and build configuration are identified here and in third-party-sources.json.
-FFmpeg source archives include the project notices; external codec/library copyrights and licenses remain applicable.
+FFmpeg command-line program: 9.0.2 minimal static build, GPL-2.0-or-later (GPL version 2 or later).
+Built from the FFmpeg 9.0.2 release source (https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz)
+with --enable-gpl --enable-libx264. libx264 (stable branch snapshot, https://code.videolan.org/videolan/x264)
+is GPL-2.0-or-later and is statically linked; both license texts are preserved in licenses/FFmpeg-CLI/.
+This is a separate executable invoked as a child process. It is trimmed to the features this application needs:
+H.264 decode, libx264 encode, mjpeg thumbnails, mov/mp4 + concat demuxing, mp4 muxing, and the scale/pad/setsar/fps filters.
+The complete, reproducible build configuration is printed by "ffmpeg -version" below and recorded in
+third-party-sources.json; the build recipe ships in the source tree at tools/ffmpeg-minimal/build.sh (developer only).
+Source archives for FFmpeg 9.0.2 and the exact x264 source snapshot accompany this release. External codec/library
+copyrights and licenses remain applicable. You may obtain the corresponding sources and rebuild/relink
+this executable under the terms of the GPL.
 
 DirectX Shader Compiler / DXIL: Microsoft Corporation and contributors.
 Notices and applicable University of Illinois, LLVM and MIT terms are in licenses/DirectXShaderCompiler/.
@@ -177,8 +181,15 @@ FFmpeg CLI version and configuration:
     source_manifest = {
         'release': f'https://github.com/leecus/teslacam-desk/releases/tag/v{version}',
         'archives': [{'file': file, 'url': url, 'sha256': digest(source_root / file)} for file, url in SOURCES.items()],
-        'ffmpeg_cli_upstream': 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
-        'ffmpeg_cli_source_commit': 'https://github.com/FFmpeg/FFmpeg/commit/946fcce07b',
+        'ffmpeg_cli': {
+            'description': 'Self-built minimal static FFmpeg CLI (GPL-2.0-or-later) with statically linked libx264.',
+            'ffmpeg_source': 'https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz',
+            'x264_source': 'https://code.videolan.org/videolan/x264',
+            'x264_source_archive': 'x264-stable-source.tar.gz',
+            'build_recipe': 'tools/ffmpeg-minimal/build.sh',
+            'license_texts': ['licenses/FFmpeg-CLI/FFMPEG-GPLv2.txt', 'licenses/FFmpeg-CLI/X264-GPLv2.txt'],
+            'note': 'Exact build configuration is embedded in the ffmpeg.exe -version output in THIRD-PARTY-NOTICES.txt.',
+        },
     }
     (stage / 'third-party-sources.json').write_text(json.dumps(source_manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     manifest = [{'path': str(p.relative_to(stage)).replace('\\', '/'), 'bytes': p.stat().st_size, 'sha256': digest(p)}
